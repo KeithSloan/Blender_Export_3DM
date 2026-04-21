@@ -106,13 +106,24 @@ Options:
 
 Geometrically compare two `.3dm` files — useful for verifying round-trips.
 Normalises coordinates to metres using each file's declared unit system, and
-compares control points, order, and normalised knot vectors.
+compares control points, weights, and normalised knot vectors.
 
 ```bash
 python3 utilities/compare_3dm.py original.3dm roundtrip.3dm [--tol 1e-6]
 ```
 
-Exits 0 if equivalent, 1 if differences found.
+Control-point differences (which affect shape) are reported as errors and cause
+exit code 1.  Knot-vector differences are reported as informational notes and do
+not cause failure — Blender stores only uniform knots, so parameterisation
+changes are expected when round-tripping closed or rational NURBS surfaces.
+
+Multi-face objects (Brep, Extrusion): when the roundtrip has fewer faces than
+the original (e.g. end caps were skipped during import), faces are matched by
+U control-point count and unmatched faces are noted as skipped rather than
+treated as errors.
+
+Exits 0 if control points match within tolerance, 1 if geometric differences
+are found.
 
 ## Sample files
 
