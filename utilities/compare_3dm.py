@@ -207,7 +207,7 @@ def _compare_nurbs_curve(nc_a, nc_b, tol, label="", scale_a=1.0, scale_b=1.0):
     if nc_a.Order != nc_b.Order:
         geo.append(f"{prefix}Order: {nc_a.Order} vs {nc_b.Order}")
 
-    n_a, n_b = nc_a.Points.Count, nc_b.Points.Count
+    n_a, n_b = len(nc_a.Points), len(nc_b.Points)
     if n_a != n_b:
         geo.append(f"{prefix}Point count: {n_a} vs {n_b}")
         return geo, knot_warns
@@ -226,8 +226,8 @@ def _compare_nurbs_curve(nc_a, nc_b, tol, label="", scale_a=1.0, scale_b=1.0):
     if not geo:
         print(f"  {prefix}Control points OK  (max deviation {max_dist:.2e} m)")
 
-    ka = [nc_a.Knots[i] for i in range(len(nc_a.Knots))]
-    kb = [nc_b.Knots[i] for i in range(len(nc_b.Knots))]
+    ka = nc_a.Knots.ToList()
+    kb = nc_b.Knots.ToList()
     knot_warns += _compare_knots(f"{prefix}Knots", ka, kb, tol)
 
     return geo, knot_warns
