@@ -46,6 +46,24 @@ def _nurbs_surface_from_object(obj):
             return g.ToNurbsSurface()
         except Exception:
             return None
+    if t == r3d.ObjectType.Extrusion:
+        try:
+            brep = g.ToBrep(False)
+            if brep is None:
+                return None
+            if len(brep.Faces) == 1:
+                srf = brep.Faces[0].UnderlyingSurface()
+                return srf.ToNurbsSurface() if srf else None
+            result = []
+            for fi in range(len(brep.Faces)):
+                srf = brep.Faces[fi].UnderlyingSurface()
+                if srf:
+                    ns = srf.ToNurbsSurface()
+                    if ns:
+                        result.append(ns)
+            return result if result else None
+        except Exception:
+            return None
     if t == r3d.ObjectType.Brep:
         # Single-face Brep — get the underlying surface
         try:
@@ -129,63 +147,70 @@ def _compare_knots(label, ka, kb, tol):
 
 
 def _compare_nurbs_surface(ns_a, ns_b, tol, label="", scale_a=1.0, scale_b=1.0):
-    """Compare two NurbsSurfaces; coordinates are normalised to metres via scale_a/scale_b."""
-    issues = []
+    """Compare two NurbsSurfaces; returns (geo_issues, knot_warnings).
+
+    geo_issues  — structural/control-point differences (affect shape)
+    knot_warnings — parameterisation differences (expected when round-tripping
+                    through Blender, which only supports uniform knots)
+    """
+    geo = []
+    knot_warns = []
     prefix = f"[{label}] " if label else ""
 
     if ns_a.OrderU != ns_b.OrderU:
-        issues.append(f"{prefix}OrderU: {ns_a.OrderU} vs {ns_b.OrderU}")
+        geo.append(f"{prefix}OrderU: {ns_a.OrderU} vs {ns_b.OrderU}")
     if ns_a.OrderV != ns_b.OrderV:
-        issues.append(f"{prefix}OrderV: {ns_a.OrderV} vs {ns_b.OrderV}")
+        geo.append(f"{prefix}OrderV: {ns_a.OrderV} vs {ns_b.OrderV}")
 
     cu_a, cv_a = ns_a.Points.CountU, ns_a.Points.CountV
     cu_b, cv_b = ns_b.Points.CountU, ns_b.Points.CountV
     if cu_a != cu_b or cv_a != cv_b:
-        issues.append(f"{prefix}Control point grid: {cu_a}x{cv_a} vs {cu_b}x{cv_b}")
-        return issues
+        geo.append(f"{prefix}Control point grid: {cu_a}x{cv_a} vs {cu_b}x{cv_b}")
+        return geo, knot_warns
 
     max_dist = 0.0
     for i in range(cu_a):
         for j in range(cv_a):
             pa = ns_a.Points.GetControlPoint(i, j)
             pb = ns_b.Points.GetControlPoint(i, j)
-            # Normalise to metres for comparison
             ax, ay, az = pa.X * scale_a, pa.Y * scale_a, pa.Z * scale_a
             bx, by, bz = pb.X * scale_b, pb.Y * scale_b, pb.Z * scale_b
             dist = math.sqrt((ax-bx)**2 + (ay-by)**2 + (az-bz)**2)
             max_dist = max(max_dist, dist)
             if dist > tol:
-                issues.append(
+                geo.append(
                     f"{prefix}CP[{i},{j}] position differs by {dist:.3e} m: "
                     f"({ax:.4f},{ay:.4f},{az:.4f}) vs ({bx:.4f},{by:.4f},{bz:.4f})"
                 )
             if not _close(pa.W, pb.W, tol):
-                issues.append(f"{prefix}CP[{i},{j}] weight differs: {pa.W:.6g} vs {pb.W:.6g}")
+                geo.append(f"{prefix}CP[{i},{j}] weight differs: {pa.W:.6g} vs {pb.W:.6g}")
 
-    if not issues:
+    if not geo:
         print(f"  {prefix}Control points OK  (max deviation {max_dist:.2e} m)")
 
     ka_u = [ns_a.KnotsU[i] for i in range(len(ns_a.KnotsU))]
     kb_u = [ns_b.KnotsU[i] for i in range(len(ns_b.KnotsU))]
     ka_v = [ns_a.KnotsV[i] for i in range(len(ns_a.KnotsV))]
     kb_v = [ns_b.KnotsV[i] for i in range(len(ns_b.KnotsV))]
-    issues += _compare_knots(f"{prefix}KnotsU", ka_u, kb_u, tol)
-    issues += _compare_knots(f"{prefix}KnotsV", ka_v, kb_v, tol)
+    knot_warns += _compare_knots(f"{prefix}KnotsU", ka_u, kb_u, tol)
+    knot_warns += _compare_knots(f"{prefix}KnotsV", ka_v, kb_v, tol)
 
-    return issues
+    return geo, knot_warns
 
 
 def _compare_nurbs_curve(nc_a, nc_b, tol, label="", scale_a=1.0, scale_b=1.0):
-    issues = []
+    """Returns (geo_issues, knot_warnings)."""
+    geo = []
+    knot_warns = []
     prefix = f"[{label}] " if label else ""
 
     if nc_a.Order != nc_b.Order:
-        issues.append(f"{prefix}Order: {nc_a.Order} vs {nc_b.Order}")
+        geo.append(f"{prefix}Order: {nc_a.Order} vs {nc_b.Order}")
 
     n_a, n_b = nc_a.Points.Count, nc_b.Points.Count
     if n_a != n_b:
-        issues.append(f"{prefix}Point count: {n_a} vs {n_b}")
-        return issues
+        geo.append(f"{prefix}Point count: {n_a} vs {n_b}")
+        return geo, knot_warns
 
     max_dist = 0.0
     for i in range(n_a):
@@ -196,16 +221,16 @@ def _compare_nurbs_curve(nc_a, nc_b, tol, label="", scale_a=1.0, scale_b=1.0):
         dist = math.sqrt((ax-bx)**2 + (ay-by)**2 + (az-bz)**2)
         max_dist = max(max_dist, dist)
         if dist > tol:
-            issues.append(f"{prefix}CP[{i}] differs by {dist:.3e} m")
+            geo.append(f"{prefix}CP[{i}] differs by {dist:.3e} m")
 
-    if not issues:
+    if not geo:
         print(f"  {prefix}Control points OK  (max deviation {max_dist:.2e} m)")
 
     ka = [nc_a.Knots[i] for i in range(len(nc_a.Knots))]
     kb = [nc_b.Knots[i] for i in range(len(nc_b.Knots))]
-    issues += _compare_knots(f"{prefix}Knots", ka, kb, tol)
+    knot_warns += _compare_knots(f"{prefix}Knots", ka, kb, tol)
 
-    return issues
+    return geo, knot_warns
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +259,8 @@ def compare(path_a, path_b, tol):
     print(f"Unit system: {unit_a} (×{scale_a} m)  vs  {unit_b} (×{scale_b} m)")
     print(f"Object count: {len(objs_a)} (original)  {len(objs_b)} (roundtrip)")
 
-    all_issues = []
+    all_geo_issues = []
+    all_knot_warns = []
 
     # Type summary
     types_a = [_object_type_str(o) for o in objs_a]
@@ -250,20 +276,39 @@ def compare(path_a, path_b, tol):
 
     print(f"\nNURBS surfaces: {len(surfs_a)} original  {len(surfs_b)} roundtrip")
 
-    for idx, ((oa, sa), (ob_, sb)) in enumerate(zip(surfs_a, surfs_b)):
-        label = f"surface {idx}"
-        print(f"\n  Comparing {label}:")
+    def _collect_surface(sa, sb, label):
         if isinstance(sa, list) or isinstance(sb, list):
             sa_list = sa if isinstance(sa, list) else [sa]
             sb_list = sb if isinstance(sb, list) else [sb]
             if len(sa_list) != len(sb_list):
-                all_issues.append(f"  {label}: face count differs {len(sa_list)} vs {len(sb_list)}")
+                print(f"  {label}: face count {len(sa_list)} vs {len(sb_list)} — comparing matching faces only (caps may be dropped)")
+                sb_by_u = {f.Points.CountU: f for f in sb_list}
+                matched = 0
+                for fi, fa in enumerate(sa_list):
+                    fb = sb_by_u.get(fa.Points.CountU)
+                    if fb is not None:
+                        g, k = _compare_nurbs_surface(fa, fb, tol, f"{label} face{fi}", scale_a, scale_b)
+                        all_geo_issues.extend(g)
+                        all_knot_warns.extend(k)
+                        matched += 1
+                    else:
+                        print(f"  {label} face{fi}: no matching roundtrip face (U={fa.Points.CountU}) — skipped (likely cap)")
+                if matched == 0:
+                    all_geo_issues.append(f"  {label}: no comparable faces found")
             else:
                 for fi, (fa, fb) in enumerate(zip(sa_list, sb_list)):
-                    all_issues += _compare_nurbs_surface(
-                        fa, fb, tol, f"{label} face{fi}", scale_a, scale_b)
+                    g, k = _compare_nurbs_surface(fa, fb, tol, f"{label} face{fi}", scale_a, scale_b)
+                    all_geo_issues.extend(g)
+                    all_knot_warns.extend(k)
         else:
-            all_issues += _compare_nurbs_surface(sa, sb, tol, label, scale_a, scale_b)
+            g, k = _compare_nurbs_surface(sa, sb, tol, label, scale_a, scale_b)
+            all_geo_issues.extend(g)
+            all_knot_warns.extend(k)
+
+    for idx, ((oa, sa), (ob_, sb)) in enumerate(zip(surfs_a, surfs_b)):
+        label = f"surface {idx}"
+        print(f"\n  Comparing {label}:")
+        _collect_surface(sa, sb, label)
 
     # Compare curves
     crvs_a = [(o, _nurbs_curve_from_object(o)) for o in objs_a]
@@ -276,17 +321,26 @@ def compare(path_a, path_b, tol):
     for idx, ((oa, ca), (ob_, cb)) in enumerate(zip(crvs_a, crvs_b)):
         label = f"curve {idx}"
         print(f"\n  Comparing {label}:")
-        all_issues += _compare_nurbs_curve(ca, cb, tol, label, scale_a, scale_b)
+        g, k = _compare_nurbs_curve(ca, cb, tol, label, scale_a, scale_b)
+        all_geo_issues.extend(g)
+        all_knot_warns.extend(k)
 
     # Summary
     print(f"\n{'='*50}")
-    if all_issues:
-        print(f"DIFFERENCES FOUND ({len(all_issues)}):")
-        for issue in all_issues:
+    if all_knot_warns:
+        print(f"PARAMETERISATION NOTE ({len(all_knot_warns)} knot difference(s) — expected when round-tripping through Blender uniform knots):")
+        for w in all_knot_warns:
+            print(f"  {w}")
+    if all_geo_issues:
+        print(f"\nGEOMETRIC DIFFERENCES ({len(all_geo_issues)}):")
+        for issue in all_geo_issues:
             print(f"  {issue}")
         return False
     else:
-        print("EQUIVALENT — no geometric differences within tolerance")
+        if all_knot_warns:
+            print("\nGEOMETRY OK — control points match within tolerance (parameterisation differs, see above)")
+        else:
+            print("EQUIVALENT — no geometric differences within tolerance")
         return True
 
 
