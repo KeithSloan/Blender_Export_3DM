@@ -75,6 +75,45 @@ Rhino 3DM file  (NurbsSurface entities, clamped cubic knots)
 OCCT BSplineSurface  (exact, no tessellation)
 ```
 
+It also pairs with [KS_JK_import_3dm](https://github.com/KeithSloan/KS_JK_import_3dm)
+for round-trip testing: import a `.3dm` as Blender NURBS surfaces, then export
+back to verify geometric equivalence.
+
+## Utilities
+
+The `utilities/` directory contains command-line tools for batch testing:
+
+### batch_roundtrip.py
+
+Import one or more `.3dm` files via the KS_JK_import_3dm addon and re-export
+using this exporter. Run headlessly via Blender's `--background` mode.
+
+```bash
+/Applications/Blender_4.4.app/Contents/MacOS/Blender --background \
+    --python utilities/batch_roundtrip.py -- \
+    --input  /path/to/testCases \
+    --output /tmp/roundtrip \
+    --nurbs
+```
+
+Options:
+- `--input`  — path to a single `.3dm` file or a directory of files
+- `--output` — output directory for exported files
+- `--nurbs` — import Breps as NURBS Surface objects and curves as NURBS Curve objects (recommended)
+- `--all-objects` — export all scene objects (default: selection only)
+
+### compare_3dm.py
+
+Geometrically compare two `.3dm` files — useful for verifying round-trips.
+Normalises coordinates to metres using each file's declared unit system, and
+compares control points, order, and normalised knot vectors.
+
+```bash
+python3 utilities/compare_3dm.py original.3dm roundtrip.3dm [--tol 1e-6]
+```
+
+Exits 0 if equivalent, 1 if differences found.
+
 ## Sample files
 
 The `SampleFiles/` directory contains a simple test case:
@@ -91,6 +130,9 @@ to verify the full pipeline end-to-end.
 
 ## Notes
 
+- Output files are written in **metres** (Blender's internal unit system).
+  Rhino and FreeCAD will display values correctly when the unit system is read
+  from the file.
 - Knot vectors are always exported as **clamped** (endpoint-interpolating)
   for compatibility with OpenCASCADE / FreeCAD.
 - World transform is baked into the control points on export.

@@ -27,58 +27,53 @@ def make_knots(point_count, order, use_endpoint, use_cyclic):
 
 
 def export_nurbs_surface(model, obj):
+    """
+    Export a Blender SURFACE object to rhino3dm NurbsSurface(s).
+
+    Blender represents a NURBS surface as one spline per V-row, each containing
+    count_u control points.  All splines are combined into one NurbsSurface.
+    """
     mat = obj.matrix_world
-    for spline in obj.data.splines:
-        if spline.type != 'NURBS':
-            print(f'  Skipping non-NURBS spline type: {spline.type}')
-            continue
+    splines = [s for s in obj.data.splines if s.type == 'NURBS']
+    if not splines:
+        print('  No NURBS splines — nothing to export')
+        return
 
-        cu = spline.point_count_u
-        cv = spline.point_count_v
-        order_u = spline.order_u
-        order_v = spline.order_v
-        is_rational = any(p.co.w != 1.0 for p in spline.points)
+    # One spline = one V-row: count_u from points per spline, count_v from spline count
+    count_u = len(splines[0].points)
+    count_v = len(splines)
+    first = splines[0]
+    order_u = first.order_u
+    order_v = first.order_v
+    is_rational = any(p.co.w != 1.0 for s in splines for p in s.points)
 
-        print(f'  NURBS surface: {cu}x{cv} CVs  order {order_u}x{order_v}  rational={is_rational}')
-        print(f'  cyclic u={spline.use_cyclic_u} v={spline.use_cyclic_v}')
-        print(f'  endpoint u={spline.use_endpoint_u} v={spline.use_endpoint_v}')
+    print(f'  NURBS surface: {count_u}x{count_v} CVs  order {order_u}x{order_v}  rational={is_rational}')
+    print(f'  cyclic u={first.use_cyclic_u} v={first.use_cyclic_v}')
+    print(f'  endpoint u={first.use_endpoint_u} v={first.use_endpoint_v}')
 
-        srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, cu, cv)
+    srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, count_u, count_v)
 
-        # Control points - Blender stores row-major with U varying fastest
-        for vi in range(cv):
-            for ui in range(cu):
-                p = spline.points[vi * cu + ui]
-                w = p.co.w
-                world = mat @ Vector((p.co.x, p.co.y, p.co.z))
-                # rhino3dm Point4d uses homogeneous form (x*w, y*w, z*w, w)
-                srf.Points[ui, vi] = rhino3dm.Point4d(
-                    world.x * w, world.y * w, world.z * w, w)
+    for vi, spline in enumerate(splines):
+        for ui, p in enumerate(spline.points):
+            w = p.co.w
+            world = mat @ Vector((p.co.x, p.co.y, p.co.z))
+            srf.Points[ui, vi] = rhino3dm.Point4d(
+                world.x * w, world.y * w, world.z * w, w)
 
-        # Knots - force clamped (endpoint=True) for OCCT compatibility
-        # Blender's non-endpoint NURBS uses uniform knots which OCCT can't
-        # represent as a non-periodic surface
-        ku = make_knots(cu, order_u, use_endpoint=True, use_cyclic=spline.use_cyclic_u)
-        kv = make_knots(cv, order_v, use_endpoint=True, use_cyclic=spline.use_cyclic_v)
-        print(f'  knots U({len(ku)}): {ku}')
-        print(f'  knots V({len(kv)}): {kv}')
+    ku = make_knots(count_u, order_u, use_endpoint=True, use_cyclic=first.use_cyclic_u)
+    kv = make_knots(count_v, order_v, use_endpoint=True, use_cyclic=first.use_cyclic_v)
+    print(f'  knots U({len(ku)}): {ku}')
+    print(f'  knots V({len(kv)}): {kv}')
 
-        expected_u = cu + order_u - 2
-        expected_v = cv + order_v - 2
-        if len(ku) != expected_u:
-            print(f'  WARNING: knot U length {len(ku)} expected {expected_u}')
-        if len(kv) != expected_v:
-            print(f'  WARNING: knot V length {len(kv)} expected {expected_v}')
+    for i, k in enumerate(ku):
+        srf.KnotsU[i] = k
+    for i, k in enumerate(kv):
+        srf.KnotsV[i] = k
 
-        for i, k in enumerate(ku):
-            srf.KnotsU[i] = k
-        for i, k in enumerate(kv):
-            srf.KnotsV[i] = k
-
-        attr = rhino3dm.ObjectAttributes()
-        attr.Name = obj.name
-        model.Objects.AddSurface(srf, attr)
-        print(f'  Added NurbsSurface: {obj.name}')
+    attr = rhino3dm.ObjectAttributes()
+    attr.Name = obj.name
+    model.Objects.AddSurface(srf, attr)
+    print(f'  Added NurbsSurface: {obj.name}')
 
 
 def export_nurbs_curve(model, obj):
@@ -145,6 +140,10 @@ def save(context, filepath, use_selection, mesh_fallback):
         return {'CANCELLED'}
 
     model = rhino3dm.File3dm()
+    # Blender's internal coordinate system is metres; declare this so Rhino
+    # interprets the exported values correctly regardless of the original file's
+    # unit system.
+    model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
 
     objects = context.selected_objects if use_selection else context.scene.objects
 
