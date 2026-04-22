@@ -197,6 +197,10 @@ def _compare_result(compare_fn, path_original, path_rt, tol):
     if "GEOMETRY OK" in output:
         return "GEOMETRY OK"
     if "GEOMETRIC DIFFERENCES" in output:
+        # Print details so failures are diagnosable
+        for line in output.splitlines():
+            if any(k in line for k in ("GEOMETRIC", "CP[", "differs", "count", "Order")):
+                print(f"    {line.strip()}")
         return "FAIL"
     return "FAIL" if not ok else "OK"
 
