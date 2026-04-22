@@ -39,15 +39,10 @@ def export_nurbs_surface(model, obj):
         print('  No NURBS splines — nothing to export')
         return
 
+    # One spline = one V-row: count_u from points per spline, count_v from spline count
     first = splines[0]
-    if len(splines) == 1 and first.point_count_u > 1:
-        # Single-spline format (written by KS_JK importer): point_count_u is the U count
-        count_u = first.point_count_u
-        count_v = len(first.points) // count_u
-    else:
-        # Multi-spline format (native Blender SURFACE): one spline per V-row
-        count_u = len(first.points)
-        count_v = len(splines)
+    count_u = len(first.points)
+    count_v = len(splines)
     order_u = first.order_u
     order_v = first.order_v
     is_rational = any(p.co.w != 1.0 for s in splines for p in s.points)
@@ -58,24 +53,12 @@ def export_nurbs_surface(model, obj):
 
     srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, count_u, count_v)
 
-    if len(splines) == 1 and first.point_count_u > 1:
-        # Single-spline format: points stored row-major (V outer, U inner)
-        pts = first.points
-        for vi in range(count_v):
-            for ui in range(count_u):
-                p = pts[vi * count_u + ui]
-                w = p.co.w
-                world = mat @ Vector((p.co.x, p.co.y, p.co.z))
-                srf.Points[ui, vi] = rhino3dm.Point4d(
-                    world.x * w, world.y * w, world.z * w, w)
-    else:
-        # Multi-spline format: one spline per V-row
-        for vi, spline in enumerate(splines):
-            for ui, p in enumerate(spline.points):
-                w = p.co.w
-                world = mat @ Vector((p.co.x, p.co.y, p.co.z))
-                srf.Points[ui, vi] = rhino3dm.Point4d(
-                    world.x * w, world.y * w, world.z * w, w)
+    for vi, spline in enumerate(splines):
+        for ui, p in enumerate(spline.points):
+            w = p.co.w
+            world = mat @ Vector((p.co.x, p.co.y, p.co.z))
+            srf.Points[ui, vi] = rhino3dm.Point4d(
+                world.x * w, world.y * w, world.z * w, w)
 
     ku = make_knots(count_u, order_u, use_endpoint=True, use_cyclic=first.use_cyclic_u)
     kv = make_knots(count_v, order_v, use_endpoint=True, use_cyclic=first.use_cyclic_v)
