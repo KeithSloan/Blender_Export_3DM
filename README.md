@@ -127,17 +127,34 @@ are found.
 
 ## Sample files
 
-The `SampleFiles/` directory contains a simple test case:
+### Blender 5.1.1 — `SampleBlendFiles/`
+
+Test scenes covering the main NURBS geometry types, created in Blender 5.1.1:
+
+| File | Contents |
+|------|----------|
+| `V5.1.1_SurfPatch.blend` | Flat NURBS surface patch |
+| `V5.1.1_SurfCylinder.blend` | NURBS cylinder surface |
+| `V5.1.1_SurfSphere.blend` | NURBS sphere surface |
+| `V5.1.1_SurfCircle_.blend` | NURBS circle surface |
+| `V5.1.1_SurfTorus.blend` | NURBS torus surface |
+| `V5.1.1_SurfTor_us.blend` | NURBS torus surface (variant) |
+| `V5.1.1_NurbsCurve.blend` | NURBS curve |
+| `V5.1.1_BezierCurve.blend` | Bezier curve |
+
+Open any file, select the object, and use `File → Export → NURBS Rhino 3DM (.3dm)`
+to export.  Import the resulting `.3dm` into FreeCAD via the
+[ImportExport_3DM](https://github.com/KeithSloan/ImportExport_3DM) workbench,
+or import back into Blender via
+[KS_JK_import_3dm](https://github.com/KeithSloan/KS_JK_import_3dm) for
+round-trip verification.
+
+### Blender 4.4 — `SampleFiles/`
 
 | File | Description |
 |------|-------------|
 | `SampleFiles/SimpleSurface.blend` | Blender file with a 4×4 cubic NURBS surface patch |
 | `SampleFiles/SimpleSurface.3dm` | Exported 3DM — ready to import into Rhino or FreeCAD |
-
-Open `SimpleSurface.blend`, export with this addon, then import the resulting
-`.3dm` into FreeCAD using the
-[ImportExport_3DM](https://github.com/KeithSloan/ImportExport_3DM) workbench
-to verify the full pipeline end-to-end.
 
 ## Notes
 
