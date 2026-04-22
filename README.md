@@ -12,7 +12,19 @@ B-spline surfaces, not tessellated approximations.
 |---|---|
 | Surface (NURBS) | `NurbsSurface` |
 | Curve (NURBS) | `NurbsCurve` |
+| Curve (Bezier) | `NurbsCurve` degree 3 with piecewise-Bezier knots |
 | Mesh (optional) | `Mesh` |
+
+## Conventions used in this document
+
+After installing Blender, rename the application bundle to include the version
+number so multiple versions can coexist:
+
+```bash
+mv /Applications/Blender.app /Applications/Blender_5.1.1.app
+```
+
+All shell commands below use this `Blender_x.y.z.app` naming convention.
 
 ## Requirements
 
@@ -79,55 +91,95 @@ It also pairs with [KS_JK_import_3dm](https://github.com/KeithSloan/KS_JK_import
 for round-trip testing: import a `.3dm` as Blender NURBS surfaces, then export
 back to verify geometric equivalence.
 
+**KS_JK_import_3dm** is a fork of
+[JesterKing's import_3dm](https://github.com/jesterKing/import_3dm).  The fork
+adds:
+
+- NURBS Surface import (`ObjectType.Surface` dispatch, in addition to Brep)
+- Custom properties (`rhino_order_u`, `rhino_order_v`, `rhino_cyclic_u`,
+  `rhino_cyclic_v`) stored on each imported Curve data block to preserve NURBS
+  properties that Blender's Python API cannot store natively in multi-spline
+  format (see *Blender NURBS surface — Python API limitation* in `CLAUDE.md`)
+- A distinct `bl_idname` (`ks_jk_import_3dm.some_data`) so both importers can
+  be enabled simultaneously for side-by-side comparison testing
+
 ## Utilities
 
-The `utilities/` directory contains command-line tools for batch testing:
+The `utilities/` directory contains command-line tools for batch testing.
+All scripts run headlessly via Blender's `--background` mode.
 
-### batch_roundtrip.py
+### batch_3dm_compare.py
 
-Import one or more `.3dm` files via the KS_JK_import_3dm addon and re-export
-using this exporter. Run headlessly via Blender's `--background` mode.
+**`.3dm` → import → export → compare**
+
+For each `.3dm` file in `Sample_3DM_Files/`: import with KS_JK_import_3dm,
+re-export, and compare original vs roundtrip.
 
 ```bash
-/Applications/Blender_4.4.app/Contents/MacOS/Blender --background \
-    --python utilities/batch_roundtrip.py -- \
-    --input  /path/to/testCases \
-    --output /tmp/roundtrip \
-    --nurbs
+/Applications/Blender_5.1.1.app/Contents/MacOS/Blender --background \
+    --python utilities/batch_3dm_compare.py -- \
+    --input  Sample_3DM_Files \
+    --output /tmp/3dm_compare
 ```
 
-Options:
-- `--input`  — path to a single `.3dm` file or a directory of files
-- `--output` — output directory for exported files
-- `--nurbs` — import Breps as NURBS Surface objects and curves as NURBS Curve objects (recommended)
-- `--all-objects` — export all scene objects (default: selection only)
+### batch_blend_compare.py
+
+**`.blend` → export → import → re-export → compare**
+
+For each `.blend` file: export to `.3dm`, import back with KS_JK_import_3dm,
+re-export, and compare the two `.3dm` files.
+
+```bash
+/Applications/Blender_5.1.1.app/Contents/MacOS/Blender --background \
+    --python utilities/batch_blend_compare.py -- \
+    --input  SampleBlendFiles/V5.1.1 \
+    --output /tmp/blend_compare
+```
+
+### batch_compare_importers.py
+
+**`.blend` → export → import (JK & KS side-by-side) → re-export → compare**
+
+As above but runs both JesterKing's importer and KS_JK_import_3dm in the same
+session and prints a side-by-side comparison table.  Useful for tracking which
+geometry types each importer supports.
+
+```bash
+/Applications/Blender_5.1.1.app/Contents/MacOS/Blender --background \
+    --python utilities/batch_compare_importers.py -- \
+    --input  SampleBlendFiles/V5.1.1 \
+    --output /tmp/compare_out
+```
 
 ### compare_3dm.py
 
-Geometrically compare two `.3dm` files — useful for verifying round-trips.
-Normalises coordinates to metres using each file's declared unit system, and
-compares control points, weights, and normalised knot vectors.
+Geometrically compare two `.3dm` files — used internally by the batch scripts
+above and also callable directly:
 
 ```bash
 python3 utilities/compare_3dm.py original.3dm roundtrip.3dm [--tol 1e-6]
 ```
 
-Control-point differences (which affect shape) are reported as errors and cause
-exit code 1.  Knot-vector differences are reported as informational notes and do
-not cause failure — Blender stores only uniform knots, so parameterisation
-changes are expected when round-tripping closed or rational NURBS surfaces.
+Normalises coordinates to metres, compares control points, weights, and
+normalised knot vectors.  Control-point differences cause exit code 1;
+knot-vector differences are informational only (Blender uses uniform knots
+so parameterisation shifts are expected on closed/rational surfaces).
 
-Multi-face objects (Brep, Extrusion): when the roundtrip has fewer faces than
-the original (e.g. end caps were skipped during import), faces are matched by
-U control-point count and unmatched faces are noted as skipped rather than
-treated as errors.
+### batch_roundtrip.py
 
-Exits 0 if control points match within tolerance, 1 if geometric differences
-are found.
+Earlier import-and-re-export script (no comparison).  Superseded by
+`batch_3dm_compare.py` for most uses.
 
 ## Sample files
 
-### Blender 5.1.1 — `SampleBlendFiles/`
+```
+SampleBlendFiles/
+  V5.1.1_Shapes.blend     ← all V5.1.1 shapes combined
+  V4.4/                   ← Blender 4.4 test files
+  V5.1.1/                 ← individual Blender 5.1.1 test files
+```
+
+### Blender 5.1.1 — `SampleBlendFiles/V5.1.1/`
 
 Test scenes covering the main NURBS geometry types, created in Blender 5.1.1:
 
@@ -149,22 +201,69 @@ or import back into Blender via
 [KS_JK_import_3dm](https://github.com/KeithSloan/KS_JK_import_3dm) for
 round-trip verification.
 
-### Blender 4.4 — `SampleFiles/`
+### Blender 4.4 — `SampleBlendFiles/V4.4/`
 
 | File | Description |
 |------|-------------|
-| `SampleFiles/SimpleSurface.blend` | Blender file with a 4×4 cubic NURBS surface patch |
-| `SampleFiles/SimpleSurface.3dm` | Exported 3DM — ready to import into Rhino or FreeCAD |
+| `V4.4_Curves.blend` | Blender 4.4 NURBS curves |
+| `V4.4_Surfaces.blend` | Blender 4.4 NURBS surfaces |
+| `SimpleSurface.blend` | 4×4 cubic NURBS surface patch |
+| `SimpleSurface.3dm` | Exported 3DM — ready to import into Rhino or FreeCAD |
+
+### Rhino sample files — `Sample_3DM_Files/`
+
+`.3dm` files copied from the
+[ImportExport_3DM](https://github.com/KeithSloan/ImportExport_3DM) FreeCAD
+workbench `testCases/` directory.  These are Rhino-originated files useful for
+testing the KS_JK_import_3dm importer independently of the Blender exporter.
+
+| File | Geometry |
+|------|----------|
+| `ArcCurve.3dm` | Arc curve |
+| `BezierCurve.3dm` | Bezier curve |
+| `Circle.3dm` | Circle curve |
+| `Cone.3dm` | Cone surface |
+| `Curve.3dm` | NURBS curve |
+| `Cylinder.3dm` | Cylinder surface |
+| `Ellipse.3dm` | Ellipse curve |
+| `LineCurve.3dm` | Line curve |
+| `PointCloud.3dm` | Point cloud |
+| `PolyCurve_Joined_Line_NURBS-curve.3dm` | Joined polycurve |
+| `PolyCurve_PolyLine.3dm` | Polyline |
+| `PolysurfCylinder.3dm` | Polysurface cylinder |
+| `Surface.3dm` | NURBS surface |
+
+### Round-trip test results — Blender 5.1.1 (KS_JK_import_3dm)
+
+Run with `utilities/batch_compare_importers.py` against `SampleBlendFiles/V5.1.1/`:
+
+| File | JK importer | KS importer |
+|------|-------------|-------------|
+| BezierCurve | EQUIVALENT | EQUIVALENT |
+| NurbsCurve | GEOMETRY OK | GEOMETRY OK |
+| SurfCircle_ | GEOMETRY OK | GEOMETRY OK |
+| SurfCylinder | — | GEOMETRY OK |
+| SurfPatch | — | GEOMETRY OK |
+| SurfSphere | — | EQUIVALENT |
+| SurfTor_us | — | GEOMETRY OK |
+| SurfTorus | — | GEOMETRY OK |
+
+`—` = JK importer does not support NURBS Surface import (falls back to render mesh, no roundtrip possible).
+
+Bezier curves are exported as degree-3 NurbsCurves with piecewise-Bezier knots
+and round-trip correctly through both importers.
 
 ## Notes
 
 - Output files are written in **metres** (Blender's internal unit system).
   Rhino and FreeCAD will display values correctly when the unit system is read
   from the file.
-- Knot vectors are always exported as **clamped** (endpoint-interpolating)
+- NURBS curves and surfaces use **clamped** knot vectors (endpoint-interpolating)
   for compatibility with OpenCASCADE / FreeCAD.
+- Bezier curves use piecewise-Bezier knots (multiplicity = degree at each segment
+  junction) which preserves exact Bezier segment geometry.
 - World transform is baked into the control points on export.
-- Blender NURBS surfaces must have `use_cyclic` off for best results.
+- Cyclic (closed) surfaces are exported correctly — the sphere and torus round-trip cleanly.
 
 ## License
 
