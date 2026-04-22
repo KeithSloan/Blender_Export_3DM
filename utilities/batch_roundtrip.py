@@ -24,7 +24,7 @@ import argparse
 import glob
 
 # Blender 4.2+ extensions use the bl_ext.user_default. prefix
-_IMPORT_MODULE = "bl_ext.user_default.import_3dm"
+_IMPORT_MODULE = "bl_ext.user_default.ks_jk_import_3dm"
 _EXPORT_MODULE = "bl_ext.user_default.export_nurbs_3dm"
 
 # Operator bl_idnames (independent of extension prefix)
