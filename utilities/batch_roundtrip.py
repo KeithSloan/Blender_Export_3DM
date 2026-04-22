@@ -28,7 +28,7 @@ _IMPORT_MODULE = "bl_ext.user_default.ks_jk_import_3dm"
 _EXPORT_MODULE = "bl_ext.user_default.export_nurbs_3dm"
 
 # Operator bl_idnames (independent of extension prefix)
-_IMPORT_OP = "import_3dm.some_data"      # jesterKing Import3dm
+_IMPORT_OP = "ks_jk_import_3dm.some_data"
 _EXPORT_OP = "export_scene.nurbs_3dm"    # NURBS 3DM exporter
 
 
