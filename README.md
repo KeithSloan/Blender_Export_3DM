@@ -265,6 +265,34 @@ and round-trip correctly through both importers.
 - World transform is baked into the control points on export.
 - Cyclic (closed) surfaces are exported correctly — the sphere and torus round-trip cleanly.
 
+## Known limitation — Blender NURBS surface Python API
+
+Round-trip testing with rhino3dm revealed that Blender's Python API cannot
+create NURBS surfaces in the native Blender 5.x format.  Blender stores surfaces
+as a single spline with `pntsu × pntsv` control points, but `point_count_u`
+(`pntsu`) is **read-only** from Python (`PROP_NOT_EDITABLE`), and `pntsv` has no
+Python exposure at all.
+
+The only surface constructable from Python is a single-row surface (`pntsv = 1`),
+causing Blender to clamp `order_v` to 2 regardless of the value set by the
+script.  Cyclic flags in V are similarly unreliable.
+
+**Current workaround:** KS_JK_import_3dm stores the original Rhino values as
+custom properties (`rhino_order_u`, `rhino_order_v`, `rhino_cyclic_u`,
+`rhino_cyclic_v`) on the Curve data block.  The exporter reads these back on
+roundtrip.  This is a side-channel hack made necessary by the API gap.
+
+**To resolve this properly, Blender's Python API needs one of:**
+
+- `point_count_u` made writable, plus `point_count_v` exposed and writable, so
+  a script can lay out a full `U × V` point grid in a single spline and declare
+  both dimensions.
+- A new surface constructor such as `splines.new('NURBS', count_u=N, count_v=M)`
+  that creates a spline with the correct `pntsu`/`pntsv` from the outset.
+
+Full technical details are in `CLAUDE.md` under
+*Known limitation — Blender NURBS surface Python API*.
+
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).

@@ -102,28 +102,81 @@ Key additions over the upstream fork:
 - Distinct `bl_idname = "ks_jk_import_3dm.some_data"` so both importers can
   coexist in the same Blender session
 
-## Blender NURBS surface — Python API limitation
+## Known limitation — Blender NURBS surface Python API
 
-Blender 5.x stores NURBS surfaces natively as a **single spline** with all
-`count_u × count_v` control points, with the U dimension in the internal field
-`pntsu` (exposed as the read-only `point_count_u` property).  This allows
-`order_v` and cyclic flags to be stored correctly.
+### Discovery
 
-The Python API **cannot** create this format: `point_count_u` / `pntsu` is
-`PROP_NOT_EDITABLE`.  The only path from Python is **multi-spline** format (one
-spline per V-row), in which Blender clamps `order_v` to 2 on each individual
-spline (since each row has `pntsv = 1`).
+This limitation was discovered during rhino3dm round-trip testing
+(`utilities/batch_compare_importers.py`).  Surfaces with `order_v > 2`
+(sphere, torus, patch) failed with `GEOMETRIC DIFFERENCES: OrderV: 3 vs 2`
+on re-export after a KS_JK import.  Investigation showed the problem was not
+in the rhino3dm library (which reads and writes `.3dm` files correctly) but
+in Blender's Python API for NURBS surfaces.
 
-**Workaround used by KS_JK_import_3dm:** the true rhino values are stored as
-custom properties on the Curve data block:
+### The problem
+
+Blender 5.x stores NURBS surfaces internally using **two fields** in the `Nurb`
+C struct:
+
+| C field | Python property | Meaning |
+|---|---|---|
+| `pntsu` | `point_count_u` | Number of control points in U |
+| `pntsv` | *(not exposed)* | Number of control points in V |
+
+Native Blender surfaces use a **single spline** containing all `pntsu × pntsv`
+control points.  With both dimensions known, Blender can correctly store and
+display `order_v`, `use_cyclic_u`, and `use_cyclic_v`.
+
+The Python API exposes `point_count_u` as **read-only** (`PROP_NOT_EDITABLE`
+in Blender's RNA).  `pntsv` has no Python exposure at all.
+
+Consequence: the only surface a Python script can create via `splines.new('NURBS')`
++ `points.add(n)` is a **single-row surface** (`pntsv = 1`).  Blender then
+clamps `order_v` to `max(2, pntsv) = 2` regardless of what the script sets,
+and cyclic flags in V behave unreliably.  Creating multiple splines (one per
+V-row) works around point count, but each individual spline still has `pntsv = 1`
+so `order_v` is still clamped to 2 on every row.
+
+Confirmed by diagnostic (`/tmp/test_order_v.py`):
+```
+Row 0: set order_v=3, read back=2   ← clamped immediately
+Row 1: set order_v=3, read back=2
+...
+After post-loop set: s0.order_v=2   ← still clamped, cannot be overridden
+```
+
+### Workaround (current implementation)
+
+KS_JK_import_3dm stores the true rhino values as **custom properties** on the
+Curve data block:
 
 | Property | Meaning |
 |---|---|
 | `rhino_order_u` | NURBS order in U |
-| `rhino_order_v` | NURBS order in V (cannot be stored in Blender spline) |
+| `rhino_order_v` | NURBS order in V (Blender always clamps this to 2) |
 | `rhino_cyclic_u` | 1 if surface is closed in U, else 0 |
 | `rhino_cyclic_v` | 1 if surface is closed in V, else 0 |
 
-The exporter (`export_nurbs_3dm.py`) reads these custom properties when it
-detects multi-spline format, ensuring a correct roundtrip even though Blender's
-spline properties cannot hold the values natively.
+The exporter (`export_nurbs_3dm.py`) reads these properties when it detects
+multi-spline format, restoring the correct values for `.3dm` output.
+
+### API requirement to resolve properly
+
+The correct fix requires **one of the following changes to Blender's Python API**:
+
+1. **Make `point_count_u` writable** — allow Python to set `pntsu` on an
+   existing spline after points have been added.  Combined with exposing
+   `point_count_v` (writable), this would let a script lay out all
+   `count_u × count_v` points in a single spline and declare the U dimension,
+   exactly matching the native 5.x single-spline format.
+
+2. **Add a surface constructor** — a new API call such as
+   `curves.new_surface(name, count_u, count_v)` or
+   `splines.new('NURBS', count_u=N, count_v=M)` that creates a spline with the
+   correct `pntsu`/`pntsv` from the outset, allowing `order_v` to be set to any
+   valid value immediately.
+
+Either change would let importers create surfaces in native Blender 5.x format
+without requiring side-channel custom properties, and would make `order_v` and
+cyclic flags directly readable by any exporter without special knowledge of the
+import source.
