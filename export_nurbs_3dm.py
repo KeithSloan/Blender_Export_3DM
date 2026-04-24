@@ -1,4 +1,5 @@
 import bpy
+import numpy as np
 from mathutils import Vector
 
 try:
@@ -255,6 +256,225 @@ def export_mesh(model, obj):
     print(f'  Added Mesh: {obj.name}  faces={len(me.polygons)}')
 
 
+# ---------------------------------------------------------------------------
+# Surface Psycho (SP) support
+# ---------------------------------------------------------------------------
+# SP stores NURBS/Bezier surface data as geometry-node output attributes on
+# MESH objects rather than using Blender's native SURFACE type.  The object
+# type is identified by the name of the last NODES modifier whose node group
+# matches one of the SP mesher node group names below.
+
+_SP_MESHER_NAMES = {
+    'BSPLINE_SURFACE':        'SP - NURBS Patch Meshing',
+    'BEZIER_SURFACE':         'SP - Bezier Patch Meshing',
+    'PLANE':                  'SP - FlatPatch Meshing',
+    'CYLINDER':               'SP - Cylindrical Meshing',
+    'CONE':                   'SP - Conical Meshing',
+    'SPHERE':                 'SP - Spherical Meshing',
+    'TORUS':                  'SP - Toroidal Meshing',
+    'SURFACE_OF_REVOLUTION':  'SP - Surface of Revolution Meshing',
+    'SURFACE_OF_EXTRUSION':   'SP - Surface of Extrusion Meshing',
+    'CURVE':                  'SP - Curve Meshing',
+    'COMPOUND':               'SP - Compound Meshing',
+}
+
+
+def _sp_type_of_object(obj):
+    """Return the SP surface-type key string, or None if not an SP object."""
+    if obj.type != 'MESH':
+        return None
+    for m in reversed(obj.modifiers):
+        if m.type == 'NODES' and m.node_group:
+            ng = m.node_group.name
+            # SP node groups are named "SP - Foo Meshing" or "SP - Foo Meshing.001"
+            base = ng[:-4] if (len(ng) > 4 and ng[-4] == '.') else ng
+            for sp_type, mesher in _SP_MESHER_NAMES.items():
+                if base == mesher or ng == mesher:
+                    return sp_type
+    return None
+
+
+def _sp_read_attr(ob, name, count=None):
+    """Read a mesh geometry-node attribute into a numpy array."""
+    att = ob.data.attributes[name]
+    n = len(att.data)
+    dt = att.data_type
+    if dt == 'FLOAT_VECTOR':
+        buf = np.empty(3 * n, dtype=float)
+        att.data.foreach_get('vector', buf)
+        arr = buf.reshape((-1, 3))
+    elif dt == 'FLOAT':
+        arr = np.empty(n, dtype=float)
+        att.data.foreach_get('value', arr)
+    elif dt == 'INT':
+        buf = np.empty(n, dtype=float)
+        att.data.foreach_get('value', buf)
+        arr = buf.astype(int)
+    elif dt == 'BOOLEAN':
+        arr = np.empty(n, dtype=bool)
+        att.data.foreach_get('value', arr)
+    elif dt == 'FLOAT2':
+        buf = np.empty(2 * n, dtype=float)
+        att.data.foreach_get('vector', buf)
+        arr = buf.reshape((-1, 2))
+    else:
+        raise ValueError(f'Unknown SP attribute type: {dt}')
+    return arr if count is None else arr[:count]
+
+
+def _sp_knots_to_rhino(knots, mults):
+    """Expand distinct knots + multiplicities into rhino3dm knot-vector format.
+
+    rhino3dm omits the outermost (first and last) repeated knot values that
+    standard NURBS theory requires, so this expansion drops them.
+    """
+    full = []
+    for k, m in zip(knots, mults):
+        full.extend([float(k)] * int(m))
+    return full[1:-1]
+
+
+def export_sp_bspline_surface(model, obj, depsgraph):
+    """Export a Surface Psycho NURBS patch (B-spline surface) to rhino3dm."""
+    ob = obj.evaluated_get(depsgraph)
+    try:
+        u_count, v_count = _sp_read_attr(ob, 'CP_count', 2).astype(int)
+        total = int(u_count) * int(v_count)
+        points = _sp_read_attr(ob, 'CP_NURBS_surf', total)
+        degree_u, degree_v = _sp_read_attr(ob, 'Degrees', 2).astype(int)
+    except KeyError as e:
+        print(f'  Skipped SP B-spline surface {obj.name!r}: missing attribute {e}')
+        return
+
+    try:
+        ip = _sp_read_attr(ob, 'IsPeriodic', 2)
+        isperiodic_u, isperiodic_v = bool(ip[0]), bool(ip[1])
+    except KeyError:
+        isperiodic_u = isperiodic_v = False
+
+    try:
+        weights = _sp_read_attr(ob, 'Weights', total)
+        is_rational = bool(np.any(weights != 1.0))
+    except KeyError:
+        weights = np.ones(total, dtype=float)
+        is_rational = False
+
+    u_count = int(u_count)
+    v_count = int(v_count)
+    degree_u = int(degree_u)
+    degree_v = int(degree_v)
+
+    # SP stores CPs as flat array in V-major order (vi outer, ui inner).
+    # Reshape to (v_count, u_count, 3) then transpose to (u_count, v_count, 3)
+    # so pts[ui, vi] and wts[ui, vi] index correctly for rhino3dm.
+    pts = points.reshape(v_count, u_count, 3).transpose(1, 0, 2)
+    wts = weights.reshape(v_count, u_count).transpose()
+
+    # Periodic surfaces: duplicate the first row/column to close the loop
+    if isperiodic_u:
+        pts = np.append(pts, pts[0:1, :, :], axis=0)
+        wts = np.append(wts, wts[0:1, :], axis=0)
+        u_count += 1
+    if isperiodic_v:
+        pts = np.append(pts, pts[:, 0:1, :], axis=1)
+        wts = np.append(wts, wts[:, 0:1], axis=1)
+        v_count += 1
+
+    order_u = degree_u + 1
+    order_v = degree_v + 1
+
+    try:
+        umult_raw = _sp_read_attr(ob, 'Multiplicity U').astype(int)
+        u_len = int(np.sum(umult_raw > 0))
+        uknots = _sp_read_attr(ob, 'Knot U', u_len)
+        umult = umult_raw[:u_len]
+
+        vmult_raw = _sp_read_attr(ob, 'Multiplicity V').astype(int)
+        v_len = int(np.sum(vmult_raw > 0))
+        vknots = _sp_read_attr(ob, 'Knot V', v_len)
+        vmult = vmult_raw[:v_len]
+    except KeyError as e:
+        print(f'  Skipped SP B-spline surface {obj.name!r}: missing knot attribute {e}')
+        return
+
+    ku = _sp_knots_to_rhino(uknots, umult)
+    kv = _sp_knots_to_rhino(vknots, vmult)
+
+    exp_ku = u_count + order_u - 2
+    exp_kv = v_count + order_v - 2
+
+    print(f'  SP B-spline surface: {u_count}x{v_count} CVs  degree {degree_u}x{degree_v}  rational={is_rational}')
+
+    if len(ku) != exp_ku or len(kv) != exp_kv:
+        print(f'  Knot length mismatch U:{len(ku)}≠{exp_ku}  V:{len(kv)}≠{exp_kv} — skipped')
+        return
+
+    srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, u_count, v_count)
+
+    for vi in range(v_count):
+        for ui in range(u_count):
+            p = pts[ui, vi]
+            w = float(wts[ui, vi])
+            srf.Points[ui, vi] = rhino3dm.Point4d(
+                float(p[0]) * w, float(p[1]) * w, float(p[2]) * w, w)
+
+    for i, k in enumerate(ku):
+        srf.KnotsU[i] = k
+    for i, k in enumerate(kv):
+        srf.KnotsV[i] = k
+
+    attr = rhino3dm.ObjectAttributes()
+    attr.Name = obj.name
+    model.Objects.AddSurface(srf, attr)
+    print(f'  Added SP B-spline surface: {obj.name!r}')
+
+
+def export_sp_bezier_surface(model, obj, depsgraph):
+    """Export a Surface Psycho Bezier patch to rhino3dm as a NURBS surface."""
+    ob = obj.evaluated_get(depsgraph)
+    try:
+        u_count, v_count = _sp_read_attr(ob, 'CP_count', 2).astype(int)
+        u_count = int(u_count)
+        v_count = int(v_count)
+        total = u_count * v_count
+        points = _sp_read_attr(ob, 'CP_any_order_surf', total)
+    except KeyError as e:
+        print(f'  Skipped SP Bezier surface {obj.name!r}: missing attribute {e}')
+        return
+
+    # A Bezier patch of degree (n-1) x (m-1) is represented as NURBS with
+    # order = count (all knots clamped to 0 or 1, multiplicity = degree).
+    degree_u = u_count - 1
+    degree_v = v_count - 1
+    order_u = u_count
+    order_v = v_count
+
+    print(f'  SP Bezier surface: {u_count}x{v_count} CVs  degree {degree_u}x{degree_v}')
+
+    srf = rhino3dm.NurbsSurface.Create(3, False, order_u, order_v, u_count, v_count)
+
+    # SP stores (vi outer, ui inner): index = vi * u_count + ui
+    for vi in range(v_count):
+        for ui in range(u_count):
+            p = points[vi * u_count + ui]
+            srf.Points[ui, vi] = rhino3dm.Point4d(float(p[0]), float(p[1]), float(p[2]), 1.0)
+
+    # rhino3dm Bezier knot vector: degree zeros followed by degree ones
+    # (full clamped knot [0]*order + [1]*order minus the outermost entries)
+    ku = [0.0] * degree_u + [1.0] * degree_u
+    kv = [0.0] * degree_v + [1.0] * degree_v
+
+    for i, k in enumerate(ku):
+        srf.KnotsU[i] = k
+    for i, k in enumerate(kv):
+        srf.KnotsV[i] = k
+
+    attr = rhino3dm.ObjectAttributes()
+    attr.Name = obj.name
+    model.Objects.AddSurface(srf, attr)
+    print(f'  Added SP Bezier surface (as NURBS): {obj.name!r}')
+
+
 def save(context, filepath, use_selection, mesh_fallback):
     if not RHINO3DM_AVAILABLE:
         print('ERROR: rhino3dm not available. Install with: pip install rhino3dm')
@@ -266,6 +486,7 @@ def save(context, filepath, use_selection, mesh_fallback):
     # unit system.
     model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
 
+    depsgraph = context.evaluated_depsgraph_get()
     objects = context.selected_objects if use_selection else context.scene.objects
 
     for obj in objects:
@@ -277,8 +498,18 @@ def save(context, filepath, use_selection, mesh_fallback):
             export_nurbs_surface(model, obj)
         elif obj.type == 'CURVE':
             export_nurbs_curve(model, obj)
-        elif obj.type == 'MESH' and mesh_fallback:
-            export_mesh(model, obj)
+        elif obj.type == 'MESH':
+            sp_type = _sp_type_of_object(obj)
+            if sp_type == 'BSPLINE_SURFACE':
+                export_sp_bspline_surface(model, obj, depsgraph)
+            elif sp_type == 'BEZIER_SURFACE':
+                export_sp_bezier_surface(model, obj, depsgraph)
+            elif sp_type is not None:
+                print(f'  SP type {sp_type!r} not yet supported for 3DM export — skipped')
+            elif mesh_fallback:
+                export_mesh(model, obj)
+            else:
+                print(f'  Skipped (type=MESH  mesh_fallback={mesh_fallback})')
         else:
             print(f'  Skipped (type={obj.type}  mesh_fallback={mesh_fallback})')
 

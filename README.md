@@ -8,12 +8,31 @@ B-spline surfaces, not tessellated approximations.
 
 ## Supported geometry
 
+### Native Blender objects
+
 | Blender type | Exported as |
 |---|---|
 | Surface (NURBS) | `NurbsSurface` |
 | Curve (NURBS) | `NurbsCurve` |
 | Curve (Bezier) | `NurbsCurve` degree 3 with piecewise-Bezier knots |
 | Mesh (optional) | `Mesh` |
+
+### Surface Psycho objects
+
+[Surface Psycho](https://github.com/Poulpator/Bezier-quest) is a Blender
+geometry-nodes addon that stores NURBS/Bezier surface data as **mesh
+attributes** rather than using Blender's native SURFACE type.  The exporter
+detects SP objects by their geometry-node modifier name and reads the surface
+data directly from those attributes — no intermediate mesh conversion.
+
+| SP type | Detected by modifier | Exported as |
+|---|---|---|
+| NURBS Patch (`SP - NURBS Patch Meshing`) | `CP_NURBS_surf`, `Degrees`, `Knot U/V`, `Multiplicity U/V` | `NurbsSurface` |
+| Bezier Patch (`SP - Bezier Patch Meshing`) | `CP_any_order_surf`, `CP_count` | `NurbsSurface` (degree = count − 1) |
+
+SP object types that are not yet supported (FlatPatch, Curve, Cylinder, Sphere,
+Cone, Torus, Surface of Revolution/Extrusion) are skipped with an informational
+message.
 
 ## Conventions used in this document
 
@@ -77,15 +96,28 @@ Options:
 
 ## Pipeline
 
-This exporter is the Blender end of a Blender → 3DM → FreeCAD NURBS pipeline:
+This exporter supports two Blender → 3DM → FreeCAD NURBS pipelines:
 
 ```
-Blender NURBS surface
+Blender NURBS surface  (native SURFACE type)
     ↓ Export NURBS 3DM (.3dm)
-Rhino 3DM file  (NurbsSurface entities, clamped cubic knots)
+Rhino 3DM file  (NurbsSurface entities, clamped knots)
     ↓ FreeCAD ImportExport_3DM workbench
 OCCT BSplineSurface  (exact, no tessellation)
 ```
+
+```
+Surface Psycho NURBS/Bezier patch  (MESH type with GN attributes)
+    ↓ Export NURBS 3DM (.3dm)
+Rhino 3DM file  (NurbsSurface entities, knots from SP attributes)
+    ↓ FreeCAD ImportExport_3DM workbench
+OCCT BSplineSurface  (exact, no tessellation)
+```
+
+Surface Psycho also has its own direct STEP/IGES exporter
+(`File → Export → Export STEP / Export IGES`) which uses Open CASCADE (OCP)
+and produces the same geometry.  The 3DM route is useful when the target
+application reads `.3dm` but not STEP/IGES.
 
 It also pairs with [KS_JK_import_3dm](https://github.com/KeithSloan/KS_JK_import_3dm)
 for round-trip testing: import a `.3dm` as Blender NURBS surfaces, then export
@@ -262,8 +294,13 @@ and round-trip correctly through both importers.
   for compatibility with OpenCASCADE / FreeCAD.
 - Bezier curves use piecewise-Bezier knots (multiplicity = degree at each segment
   junction) which preserves exact Bezier segment geometry.
-- World transform is baked into the control points on export.
+- World transform is baked into the control points on export for native Blender
+  SURFACE/CURVE objects.
 - Cyclic (closed) surfaces are exported correctly — the sphere and torus round-trip cleanly.
+- **Surface Psycho objects:** SP stores control points in world space inside the
+  geometry-node attributes, so no additional world-transform is applied.  SP
+  objects with non-identity object transforms should be applied before export
+  (same requirement as SP's own STEP/IGES exporter).
 
 ## Known limitation — Blender NURBS surface Python API
 

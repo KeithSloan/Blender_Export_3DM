@@ -74,6 +74,101 @@ workbench).  Only `.3dm` files are copied — screenshots are excluded.
 If new test cases are added upstream, copy the `.3dm` files again from that
 location.
 
+## Surface Psycho (SP) support
+
+Surface Psycho is a Blender geometry-nodes addon (repo: `Bezier-quest`) that
+stores NURBS/Bezier surface data as mesh attributes on MESH objects rather than
+using Blender's native SURFACE type.  Its own STEP/IGES exporter reads those
+attributes via Open CASCADE (OCP); the 3DM exporter replicates the same
+attribute-reading logic using only numpy and rhino3dm.
+
+### Detection
+
+SP object type is identified by the name of the **last NODES modifier** whose
+node group matches a known mesher name.  Node groups may be numbered
+(`SP - NURBS Patch Meshing.001`) — the exporter strips the last 4 characters
+before comparing, mirroring SP's own `sp_type_of_object` logic.
+
+Mesher → type mapping (only BSPLINE_SURFACE and BEZIER_SURFACE are currently
+exported; others are skipped with a message):
+
+| SP type | Modifier node group |
+|---|---|
+| `BSPLINE_SURFACE` | `SP - NURBS Patch Meshing` |
+| `BEZIER_SURFACE` | `SP - Bezier Patch Meshing` |
+| `PLANE` | `SP - FlatPatch Meshing` |
+| `CYLINDER` | `SP - Cylindrical Meshing` |
+| `CONE` | `SP - Conical Meshing` |
+| `SPHERE` | `SP - Spherical Meshing` |
+| `TORUS` | `SP - Toroidal Meshing` |
+| `SURFACE_OF_REVOLUTION` | `SP - Surface of Revolution Meshing` |
+| `SURFACE_OF_EXTRUSION` | `SP - Surface of Extrusion Meshing` |
+| `CURVE` | `SP - Curve Meshing` |
+
+### NURBS patch attributes (`BSPLINE_SURFACE`)
+
+Read from the evaluated mesh (after geometry-nodes execution):
+
+| Attribute | Type | Description |
+|---|---|---|
+| `CP_count` | INT[2] | `[u_count, v_count]` |
+| `CP_NURBS_surf` | FLOAT_VECTOR[u×v] | Control points, V-major order |
+| `Degrees` | INT[2] | `[degree_u, degree_v]` |
+| `IsPeriodic` | BOOL[2] | `[periodic_u, periodic_v]` (optional) |
+| `Weights` | FLOAT[u×v] | Rational weights (optional; defaults to 1) |
+| `Multiplicity U` | INT[] | Knot multiplicities in U (trailing zeros) |
+| `Knot U` | FLOAT[] | Distinct knot values in U |
+| `Multiplicity V` | INT[] | Knot multiplicities in V (trailing zeros) |
+| `Knot V` | FLOAT[] | Distinct knot values in V |
+
+Control points are stored V-major (vi outer, ui inner) and are transposed
+to `pts[ui, vi]` before being written to rhino3dm's `srf.Points[ui, vi]`.
+
+Periodic surfaces: SP stores N distinct CVs; the exporter appends the first
+row/column to close the loop (matching SP's `NURBS_face_to_topods`).
+
+### Knot conversion
+
+SP stores knots as distinct values + multiplicities (standard B-spline form).
+rhino3dm uses a full expanded vector **minus the outermost entries**:
+
+```
+full = expand(knots, mults)          # e.g. [0,0,0,0, 0.5, 1,1,1,1]
+rhino_knots = full[1:-1]             # e.g. [0,0,0, 0.5, 1,1,1]
+```
+
+Expected length: `count + order - 2`.  A mismatch triggers a skip with a
+warning — this usually indicates a degenerate or unsupported SP configuration.
+
+### Bezier patch attributes (`BEZIER_SURFACE`)
+
+| Attribute | Type | Description |
+|---|---|---|
+| `CP_count` | INT[2] | `[u_count, v_count]` |
+| `CP_any_order_surf` | FLOAT_VECTOR[u×v] | Control points, V-major order |
+
+Represented in rhino3dm as a clamped NURBS with `order = count` (degree =
+count − 1) and knot vector `[0]*degree + [1]*degree`.
+
+### World transform
+
+SP geometry-node trees output control points in **world space** (they
+internally apply the object's world matrix).  Therefore `matrix_world` is
+**not** applied during SP export — matching SP's own STEP/IGES exporter.  SP
+objects with unapplied transforms should have their transforms applied first
+(`Ctrl+A → All Transforms` in Blender).
+
+### SP file locations
+
+```
+/Users/ksloan/github/Blender_Addons/SurfacePsycho/   ← SP add-on source
+/Users/ksloan/github/Bezier-quest/                    ← SP demo/test blend files
+```
+
+Reference files for understanding SP internals:
+- `SurfacePsycho/common/utils.py` — `sp_type_of_object`, `read_attribute_by_name`, enums
+- `SurfacePsycho/exporter/export_process_cad.py` — `NURBS_face_to_topods`, `bezier_face_to_topods`
+
 ## Bezier curve export
 
 Blender Bezier splines are exported as degree-3 `NurbsCurve` objects using a
