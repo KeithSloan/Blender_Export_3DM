@@ -42,6 +42,51 @@ version = "0.1.0"   # → increment patch, minor, or major as appropriate
 Use semantic versioning: patch for bug fixes, minor for new features, major for
 breaking changes.  Commit the version bump together with the code change.
 
+## Development deploy process
+
+The extension install directory holds **copies** of the source files, not
+symlinks.  After any change to `export_nurbs_3dm.py`, `__init__.py`, or
+`blender_manifest.toml`, deploy to the running Blender installation(s):
+
+```bash
+DEST="$HOME/Library/Application Support/Blender/5.1/extensions/user_default/export_nurbs_3dm"
+cp __init__.py blender_manifest.toml export_nurbs_3dm.py "$DEST/"
+find "$DEST" -name "*.pyc" -delete
+```
+
+Repeat for any other active Blender versions (e.g. `4.4`).  Blender must be
+**restarted** (or the extension reloaded) to pick up the new files.
+
+Forgetting this step is the most common cause of "why isn't my change taking
+effect?" — always verify the installed version with:
+```bash
+grep "^version" "$DEST/blender_manifest.toml"
+```
+
+## Headless export (batch / scripted)
+
+To export a `.blend` file to `.3dm` without opening Blender's GUI:
+
+```bash
+cat > /tmp/export_to_3dm.py << 'EOF'
+import bpy, sys
+args = sys.argv[sys.argv.index("--") + 1:]
+bpy.ops.wm.open_mainfile(filepath=args[0])
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.export_scene.nurbs_3dm(filepath=args[1], use_selection=True)
+EOF
+
+/Applications/Blender_5.1.1.app/Contents/MacOS/Blender --background \
+  --python /tmp/export_to_3dm.py -- input.blend output.3dm
+```
+
+Output lines of interest:
+- `Added SP …` — object exported
+- `SP … : no edge geometry — skipped` — COMPOUND/CURVE with empty mesh
+- `SP type '…' not yet supported` — unrecognised SP type
+- `Written: <path>` — file written successfully
+- `RESULT: {'FINISHED'}` — operator completed
+
 ## SampleBlendFiles layout
 
 ```
@@ -66,6 +111,25 @@ SampleBlendFiles/
 
 Do not commit `.blend1` files (Blender backup files).
 
+## Surface_Psycho_Files
+
+Real-world SP model files used to test the exporter against production content.
+Exported `.3dm` files are committed alongside the `.blend` sources.
+
+```
+Surface_Psycho_Files/
+  SP - 50ft Pinnace Nurbs model.blend       ← 165 BEZIER_SURFACE, 85 COMPOUND,
+  SP - 50ft Pinnace Nurbs model.3dm             25 PLANE, 19 CURVE  (306 total)
+  SP - Damen_Stan_Tender_1905_fix.blend     ← 212 BEZIER_SURFACE, 144 PLANE,
+  SP - Damen_Stan_Tender_1905_fix.3dm           20 COMPOUND, 3 CURVE  (389 total)
+  SP - any order curve iterative vs unlooped.blend  ← 2 BEZIER_CURVE_ANY_ORDER
+  SP - any order curve iterative vs unlooped.3dm
+  SP - Other Primitives_subset.3dm          ← subset export (no source blend)
+```
+
+Object counts are for Blender 5.1.1.  COMPOUND objects in the Pinnace and Damen
+files have no evaluated edge geometry and are skipped on export.
+
 ## Sample_3DM_Files
 
 Copied from `/Users/ksloan/Workbenches/ImportExport_3DM/testCases/` (the
@@ -88,6 +152,11 @@ SP object type is identified by the name of the **last NODES modifier** whose
 node group matches a known mesher name.  Node groups may be numbered
 (`SP - NURBS Patch Meshing.001`) — the exporter strips the last 4 characters
 before comparing, mirroring SP's own `sp_type_of_object` logic.
+
+> **Double-space gotcha:** The `SP -  Bezier Curve Any Order` node group has
+> **two spaces** after the dash (`SP -  Bezier…`), unlike all other SP node
+> groups which use a single space (`SP - NURBS…`).  The mapping in
+> `_SP_MESHER_NAMES` must use the double-space string exactly.
 
 Mesher → type mapping:
 

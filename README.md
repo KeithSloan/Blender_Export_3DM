@@ -276,6 +276,21 @@ so parameterisation shifts are expected on closed/rational surfaces).
 Earlier import-and-re-export script (no comparison).  Superseded by
 `batch_3dm_compare.py` for most uses.
 
+### Headless single-file export
+
+To export one `.blend` to `.3dm` from the command line without opening the GUI:
+
+```bash
+/Applications/Blender_5.1.1.app/Contents/MacOS/Blender --background \
+    --python-expr "
+import bpy, sys
+args = sys.argv[sys.argv.index('--') + 1:]
+bpy.ops.wm.open_mainfile(filepath=args[0])
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.export_scene.nurbs_3dm(filepath=args[1], use_selection=True)
+" -- input.blend output.3dm
+```
+
 ## Sample files
 
 ```
@@ -283,6 +298,13 @@ SampleBlendFiles/
   V5.1.1_Shapes.blend     ← all V5.1.1 shapes combined
   V4.4/                   ← Blender 4.4 test files
   V5.1.1/                 ← individual Blender 5.1.1 test files
+Surface_Psycho_Files/
+  SP - 50ft Pinnace Nurbs model.blend/.3dm
+  SP - Damen_Stan_Tender_1905_fix.blend/.3dm
+  SP - any order curve iterative vs unlooped.blend/.3dm
+  SP - Other Primitives_subset.3dm
+Sample_3DM_Files/
+  *.3dm                   ← Rhino-originated test files
 ```
 
 ### Blender 5.1.1 — `SampleBlendFiles/V5.1.1/`
