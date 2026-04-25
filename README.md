@@ -94,6 +94,41 @@ Options:
 - **Selection Only** — export only selected objects (default: on)
 - **Export Meshes** — include mesh objects as rhino3dm Mesh (default: off)
 
+### Exporting a subset of objects
+
+The **Selection Only** option (on by default) is the correct way to export a
+subset.  Select the objects you want in the 3D viewport or the Outliner, then
+`File → Export → NURBS Rhino 3DM (.3dm)`.  Only the selected objects are
+written to the `.3dm` file.
+
+> **Do not use File → Save Selection** to create a subset blend file for later
+> export.  Blender's Save Selection creates a *linked library file* — the
+> saved `.blend` holds only references back to the original file, not copies
+> of the data.  If the original file is moved or renamed, library links break
+> and Blender reports "Library file, loading empty scene", leaving nothing to
+> export.  Use Selection Only at export time instead.
+
+If you need a **standalone subset `.blend`** for distribution or testing:
+
+1. Open the original file.
+2. Select the objects you want to **keep**.
+3. Invert the selection: **Ctrl+I** in the 3D viewport.
+4. Delete the unwanted objects: press **Delete** key (or right-click → Delete).
+5. `File → Save Copy` — saves a new standalone file; the original is untouched.
+
+### Exporting large Surface Psycho files
+
+For files like `SP - 50ft Pinnace Nurbs model.blend`, the same Selection Only
+workflow applies.  Bear in mind that not all SP object types are exportable yet
+— check the [Supported geometry](#supported-geometry) table.  Objects whose SP
+type is not supported are skipped with an informational message in the console;
+the export still completes for all supported objects.
+
+The Pinnace file consists mainly of `SP - FlatPatch Meshing` (FlatPatch — not
+yet supported) and `SP - Bezier Patch Meshing` (Bezier patch — exported as
+`NurbsSurface`).  Exporting the whole file will produce a `.3dm` containing the
+Bezier patches; the FlatPatch objects will be skipped.
+
 ## Pipeline
 
 This exporter supports two Blender → 3DM → FreeCAD NURBS pipelines:
