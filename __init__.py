@@ -36,9 +36,12 @@ class EXPORT_OT_nurbs_3dm(Operator, ExportHelper):
     )
 
     def execute(self, context):
+        filepath = self.filepath
+        if not self.export_flatpatch and filepath.endswith('.3dm'):
+            filepath = filepath[:-4] + '_nofp.3dm'
         return export_nurbs_3dm.save(
             context,
-            self.filepath,
+            filepath,
             self.use_selection,
             self.mesh_fallback,
             self.export_flatpatch,
