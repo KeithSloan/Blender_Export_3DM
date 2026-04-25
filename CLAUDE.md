@@ -146,6 +146,20 @@ using Blender's native SURFACE type.  Its own STEP/IGES exporter reads those
 attributes via Open CASCADE (OCP); the 3DM exporter replicates the same
 attribute-reading logic using only numpy and rhino3dm.
 
+### Export options
+
+| Option | Default | Description |
+|---|---|---|
+| `use_selection` | `True` | Export selected objects only |
+| `mesh_fallback` | `False` | Export mesh objects as rhino3dm Mesh |
+| `export_flatpatch` | `True` | Export SP FlatPatch objects as closed boundary polylines |
+
+**`export_flatpatch` note:** FlatPatch boundaries are large closed degree-1
+polylines (trimming curves).  Some applications (e.g. FreeCAD's 3DM importer)
+fill closed planar curves as faces, causing large flat sheets to dominate the
+view.  Set `export_flatpatch=False` to omit them when importing into FreeCAD
+for surface-only workflows.
+
 ### Detection
 
 SP object type is identified by the name of the **last NODES modifier** whose

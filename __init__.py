@@ -28,6 +28,12 @@ class EXPORT_OT_nurbs_3dm(Operator, ExportHelper):
         description='Export mesh objects as rhino3dm Mesh when no NURBS available',
         default=False,
     )
+    export_flatpatch: BoolProperty(
+        name='Export FlatPatch boundaries',
+        description='Export SP FlatPatch objects as closed boundary polylines. '
+                    'Disable to omit trimming/boundary curves from the 3DM file.',
+        default=True,
+    )
 
     def execute(self, context):
         return export_nurbs_3dm.save(
@@ -35,12 +41,14 @@ class EXPORT_OT_nurbs_3dm(Operator, ExportHelper):
             self.filepath,
             self.use_selection,
             self.mesh_fallback,
+            self.export_flatpatch,
         )
 
     def draw(self, context):
         layout = self.layout
         layout.prop(self, 'use_selection')
         layout.prop(self, 'mesh_fallback')
+        layout.prop(self, 'export_flatpatch')
 
 
 def menu_func_export(self, context):

@@ -37,6 +37,9 @@ data directly from those attributes — no intermediate mesh conversion.
 > **FlatPatch note:** Exported as a closed boundary polyline, not a trimmed
 > surface.  The boundary curve can be used in FreeCAD or Rhino to reconstruct
 > the surface (e.g. with a Fill Surface or planar face command).
+> Some importers (including FreeCAD's 3DM importer) fill closed planar curves
+> as faces, causing large flat sheets to dominate the scene.  Use the
+> **Export FlatPatch boundaries** checkbox to omit them when this is unwanted.
 
 > **Curve / Compound note:** The true NURBS control data (`CP_curve`,
 > `Degree`, `Knot` attributes) is not present in the evaluated mesh for these

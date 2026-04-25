@@ -697,7 +697,7 @@ def export_sp_flatpatch(model, obj, depsgraph):
     print(f'  Added SP FlatPatch boundary: {obj.name!r}  ({n} vertices)')
 
 
-def save(context, filepath, use_selection, mesh_fallback):
+def save(context, filepath, use_selection, mesh_fallback, export_flatpatch=True):
     if not RHINO3DM_AVAILABLE:
         print('ERROR: rhino3dm not available. Install with: pip install rhino3dm')
         return {'CANCELLED'}
@@ -727,7 +727,10 @@ def save(context, filepath, use_selection, mesh_fallback):
             elif sp_type == 'BEZIER_SURFACE':
                 export_sp_bezier_surface(model, obj, depsgraph)
             elif sp_type == 'PLANE':
-                export_sp_flatpatch(model, obj, depsgraph)
+                if export_flatpatch:
+                    export_sp_flatpatch(model, obj, depsgraph)
+                else:
+                    print(f'  SP FlatPatch {obj.name!r}: skipped (export_flatpatch=False)')
             elif sp_type == 'CURVE':
                 export_sp_curve(model, obj, depsgraph)
             elif sp_type == 'COMPOUND':
