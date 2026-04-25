@@ -475,6 +475,51 @@ def export_sp_bezier_surface(model, obj, depsgraph):
     print(f'  Added SP Bezier surface (as NURBS): {obj.name!r}')
 
 
+def export_sp_flatpatch(model, obj, depsgraph):
+    """Export a Surface Psycho FlatPatch boundary as a closed NurbsCurve polyline.
+
+    SP FlatPatch stores its boundary as degree-1 segments in the CP_planar
+    attribute (world space), but only the explicit segments — the connecting
+    edges between them are implicit.  The easiest source of the complete,
+    connected boundary polygon is the evaluated mesh polygon, which the GN
+    mesher builds correctly.  Mesh vertices are in local (object) space so
+    matrix_world is applied to convert to world space.
+
+    Each polygon in the mesh is exported as a separate closed NurbsCurve.
+    SP FlatPatch meshes typically have two polygons (front and back faces);
+    only polygon 0 (index 0) is exported to avoid duplicates.
+    """
+    ob = obj.evaluated_get(depsgraph)
+    me = ob.data
+
+    if not me.polygons:
+        print(f'  SP FlatPatch {obj.name!r}: no polygons — skipped')
+        return
+
+    mat = obj.matrix_world
+    verts_local = np.empty(len(me.vertices) * 3, float)
+    me.vertices.foreach_get('co', verts_local)
+    verts_local = verts_local.reshape(-1, 3)
+
+    # Export only the first polygon to avoid duplicating the mirrored back face
+    poly = me.polygons[0]
+    boundary = [mat @ Vector(verts_local[vi]) for vi in poly.vertices]
+    n = len(boundary)
+
+    # Closed degree-1 NURBS polyline: n+1 points (last = first), n+1 knots
+    nc = rhino3dm.NurbsCurve(3, False, 2, n + 1)
+    for i, pt in enumerate(boundary):
+        nc.Points[i] = rhino3dm.Point4d(pt.x, pt.y, pt.z, 1.0)
+    nc.Points[n] = rhino3dm.Point4d(boundary[0].x, boundary[0].y, boundary[0].z, 1.0)
+    for i in range(n + 1):
+        nc.Knots[i] = float(i)
+
+    attr = rhino3dm.ObjectAttributes()
+    attr.Name = obj.name
+    model.Objects.AddCurve(nc, attr)
+    print(f'  Added SP FlatPatch boundary: {obj.name!r}  ({n} vertices)')
+
+
 def save(context, filepath, use_selection, mesh_fallback):
     if not RHINO3DM_AVAILABLE:
         print('ERROR: rhino3dm not available. Install with: pip install rhino3dm')
@@ -504,6 +549,8 @@ def save(context, filepath, use_selection, mesh_fallback):
                 export_sp_bspline_surface(model, obj, depsgraph)
             elif sp_type == 'BEZIER_SURFACE':
                 export_sp_bezier_surface(model, obj, depsgraph)
+            elif sp_type == 'PLANE':
+                export_sp_flatpatch(model, obj, depsgraph)
             elif sp_type is not None:
                 print(f'  SP type {sp_type!r} not yet supported for 3DM export — skipped')
             elif mesh_fallback:
