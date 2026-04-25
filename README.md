@@ -133,16 +133,40 @@ If you need a **standalone subset `.blend`** for distribution or testing:
 
 ### Exporting large Surface Psycho files
 
-For files like `SP - 50ft Pinnace Nurbs model.blend`, the same Selection Only
-workflow applies.  Bear in mind that not all SP object types are exportable yet
-— check the [Supported geometry](#supported-geometry) table.  Objects whose SP
-type is not supported are skipped with an informational message in the console;
-the export still completes for all supported objects.
+For large SP files the same Selection Only workflow applies.  Objects whose SP
+type is not yet supported are skipped with an informational message; the export
+still completes for all supported objects.  COMPOUND objects that have no
+evaluated edge geometry (empty chains) are also skipped with a message.
 
-The Pinnace file consists mainly of `SP - FlatPatch Meshing` (FlatPatch —
-exported as a closed boundary polyline) and `SP - Bezier Patch Meshing` (Bezier
-patch — exported as `NurbsSurface`).  COMPOUND objects with no evaluated edge
-geometry are skipped with an informational message.
+### Surface_Psycho_Files — object-type analysis
+
+The `Surface_Psycho_Files/` directory contains three SP test files.  The table
+below shows the SP object-type breakdown for each file (Blender 5.1.1,
+counted from scene objects):
+
+| SP type | Pinnace | Damen | Any-order curve |
+|---|---|---|---|
+| `BEZIER_SURFACE` | 165 | 212 | — |
+| `COMPOUND` | 85 | 20 | — |
+| `PLANE` (FlatPatch) | 25 | 144 | — |
+| `CURVE` | 19 | 3 | — |
+| `BEZIER_CURVE_ANY_ORDER` | — | — | 2 |
+| Non-SP (EMPTY, CAMERA, light, native curve, …) | 12 | 10 | — |
+| **Total objects** | **306** | **389** | **2** |
+
+Export behaviour with v0.6.0:
+
+- **Pinnace** (`SP - 50ft Pinnace Nurbs model`): 165 Bezier patches exported as
+  `NurbsSurface`; 25 FlatPatch boundaries exported as closed `NurbsCurve`
+  polylines; 19 Curve chains exported as `NurbsCurve` polylines; most of the 85
+  COMPOUND objects had no evaluated edge geometry and were skipped.
+- **Damen** (`SP - Damen_Stan_Tender_1905_fix`): 212 Bezier patches exported as
+  `NurbsSurface`; 144 FlatPatch boundaries as `NurbsCurve` polylines; 3 Curve
+  chains as `NurbsCurve`; most of the 20 COMPOUND objects had no edge geometry
+  and were skipped.
+- **Any-order curve** (`SP - any order curve iterative vs unlooped`): 2 objects,
+  both exported as single-segment degree-12 `NurbsCurve` (13 control points,
+  clamped Bezier knots).
 
 ## Pipeline
 
