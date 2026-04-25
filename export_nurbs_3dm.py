@@ -1,6 +1,6 @@
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 try:
     import rhino3dm
@@ -265,18 +265,18 @@ def export_mesh(model, obj):
 # matches one of the SP mesher node group names below.
 
 _SP_MESHER_NAMES = {
-    'BSPLINE_SURFACE':        'SP - NURBS Patch Meshing',
-    'BEZIER_SURFACE':         'SP - Bezier Patch Meshing',
-    'PLANE':                  'SP - FlatPatch Meshing',
-    'CYLINDER':               'SP - Cylindrical Meshing',
-    'CONE':                   'SP - Conical Meshing',
-    'SPHERE':                 'SP - Spherical Meshing',
-    'TORUS':                  'SP - Toroidal Meshing',
-    'SURFACE_OF_REVOLUTION':  'SP - Surface of Revolution Meshing',
-    'SURFACE_OF_EXTRUSION':   'SP - Surface of Extrusion Meshing',
-    'CURVE':                  'SP - Curve Meshing',
-    'COMPOUND':               'SP - Compound Meshing',
-    'BEZIER_CURVE_ANY_ORDER': 'SP -  Bezier Curve Any Order',
+    'BSPLINE_SURFACE':        ('SP - NURBS Patch Meshing', 'SP - NURBS Patch'),
+    'BEZIER_SURFACE':         ('SP - Bezier Patch Meshing', 'SP - Bezier Patch'),
+    'PLANE':                  ('SP - FlatPatch Meshing', 'SP - FlatPatch'),
+    'CYLINDER':               ('SP - Cylindrical Meshing', 'SP - Cylindrical'),
+    'CONE':                   ('SP - Conical Meshing', 'SP - Conical'),
+    'SPHERE':                 ('SP - Spherical Meshing', 'SP - Spherical'),
+    'TORUS':                  ('SP - Toroidal Meshing', 'SP - Toroidal'),
+    'SURFACE_OF_REVOLUTION':  ('SP - Surface of Revolution Meshing', 'SP - Surface of Revolution'),
+    'SURFACE_OF_EXTRUSION':   ('SP - Surface of Extrusion Meshing', 'SP - Surface of Extrusion'),
+    'CURVE':                  ('SP - Curve Meshing', 'SP - Curve'),
+    'COMPOUND':               ('SP - Compound Meshing', 'SP - Compound'),
+    'BEZIER_CURVE_ANY_ORDER': ('SP -  Bezier Curve Any Order',),
 }
 
 
@@ -289,8 +289,8 @@ def _sp_type_of_object(obj):
             ng = m.node_group.name
             # SP node groups are named "SP - Foo Meshing" or "SP - Foo Meshing.001"
             base = ng[:-4] if (len(ng) > 4 and ng[-4] == '.') else ng
-            for sp_type, mesher in _SP_MESHER_NAMES.items():
-                if base == mesher or ng == mesher:
+            for sp_type, meshers in _SP_MESHER_NAMES.items():
+                if base in meshers or ng in meshers:
                     return sp_type
     return None
 
@@ -335,8 +335,191 @@ def _sp_knots_to_rhino(knots, mults):
     return full[1:-1]
 
 
+# ---------------------------------------------------------------------------
+# Mirror modifier support
+# ---------------------------------------------------------------------------
+# Surface Psycho's geometry-node mesher writes a single patch worth of CPs to
+# attributes on the evaluated mesh.  A Mirror modifier in the stack duplicates
+# mesh elements (verts/faces/edges) but does not duplicate the SP attribute
+# payload — so without explicit support here the mirrored half of every
+# Mirror-modifier-bearing object is silently dropped on export.  This module
+# enumerates the world-space transforms that the modifier stack would produce
+# and gives the export functions a way to apply them to the original CPs.
+#
+# Note: SP CURVE and SP COMPOUND objects export from the *evaluated* edge mesh
+# (which already includes the mirrored edges), so they do not need explicit
+# Mirror handling.  Only SP types that read CP attributes — BSPLINE_SURFACE,
+# BEZIER_SURFACE, BEZIER_CURVE_ANY_ORDER — and FLATPATCH (which reads only
+# polygon[0]) need it.
+
+def _mirror_transforms(obj):
+    """Return [(Matrix, suffix), ...] — one entry per geometric copy that the
+    Mirror modifier stack on *obj* would produce.  The first entry is always
+    the identity (the original geometry passes through); each subsequent entry
+    represents one mirrored copy.
+
+    A Mirror modifier with N enabled axes contributes 2**N copies (the
+    original plus 2**N - 1 mirrored variants).  Stacked Mirror modifiers
+    compose as a Cartesian product, so total copies = product of 2**N_i.
+
+    Mirroring is performed in the modifier's reference frame:
+    ``mirror_object.matrix_world`` if ``mirror_object`` is set, otherwise
+    ``obj.matrix_world``.  Disabled modifiers (eyeball off) are skipped.
+    """
+    transforms = [(Matrix.Identity(4), '')]
+
+    for m in obj.modifiers:
+        if m.type != 'MIRROR' or not m.show_viewport:
+            continue
+        ref = m.mirror_object.matrix_world if m.mirror_object else obj.matrix_world
+        ref_inv = ref.inverted_safe()
+        ax = tuple(m.use_axis)
+        if not any(ax):
+            continue
+
+        new_list = []
+        for tf, label in transforms:
+            new_list.append((tf, label))  # original passes through
+            for fx in ((False, True) if ax[0] else (False,)):
+                for fy in ((False, True) if ax[1] else (False,)):
+                    for fz in ((False, True) if ax[2] else (False,)):
+                        if not (fx or fy or fz):
+                            continue
+                        flip = Matrix.Diagonal((
+                            -1.0 if fx else 1.0,
+                            -1.0 if fy else 1.0,
+                            -1.0 if fz else 1.0,
+                            1.0,
+                        ))
+                        mirror_mat = ref @ flip @ ref_inv
+                        suffix = '_mirror'
+                        if fx: suffix += 'X'
+                        if fy: suffix += 'Y'
+                        if fz: suffix += 'Z'
+                        new_list.append((mirror_mat @ tf, label + suffix))
+        transforms = new_list
+
+    return transforms
+
+
+def _orientation_flipped(mat):
+    """True if *mat* reverses orientation (negative determinant).
+
+    When True, a surface or closed curve's CP order should be reversed so the
+    resulting NURBS keeps consistent normal/winding direction.
+    """
+    return mat.determinant() < 0.0
+
+
+def _transform_pts3(pts, mat):
+    """Apply a 4x4 transform to an array of 3D points (any leading shape with
+    trailing dim 3).  Returns a new array of the same shape.
+    """
+    out = np.empty_like(pts, dtype=float)
+    flat_in = pts.reshape(-1, 3)
+    flat_out = out.reshape(-1, 3)
+    for i in range(flat_in.shape[0]):
+        v = mat @ Vector((float(flat_in[i, 0]),
+                          float(flat_in[i, 1]),
+                          float(flat_in[i, 2])))
+        flat_out[i] = (v.x, v.y, v.z)
+    return out
+
+
+def _reverse_knots(knots):
+    """Reverse a knot vector while preserving its parameter span [a, b].
+
+    For a vector ``ku`` with ``ku[0] == a`` and ``ku[-1] == b``, the reversed
+    form is ``a + b - ku[N-1-i]``, which keeps the knots non-decreasing and
+    spanning the same interval.
+    """
+    if not knots:
+        return list(knots)
+    a = knots[0]
+    b = knots[-1]
+    return [a + b - k for k in reversed(knots)]
+
+
+def _build_nurbs_surface(pts_uv3, wts_uv, order_u, order_v, ku, kv, is_rational):
+    """Build a rhino3dm NurbsSurface from CPs (u, v, 3), weights (u, v),
+    orders, and knot vectors.
+    """
+    u_count, v_count, _ = pts_uv3.shape
+    srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, u_count, v_count)
+    for vi in range(v_count):
+        for ui in range(u_count):
+            p = pts_uv3[ui, vi]
+            w = float(wts_uv[ui, vi])
+            srf.Points[ui, vi] = rhino3dm.Point4d(
+                float(p[0]) * w, float(p[1]) * w, float(p[2]) * w, w)
+    for i, k in enumerate(ku):
+        srf.KnotsU[i] = k
+    for i, k in enumerate(kv):
+        srf.KnotsV[i] = k
+    return srf
+
+
+def _emit_mirrored_surface(model, obj, pts_uv3, wts_uv, order_u, order_v,
+                           ku, kv, is_rational, log_label):
+    """Emit a NurbsSurface for the original CPs and one for each mirrored copy
+    produced by *obj*'s Mirror modifier stack.
+
+    For orientation-flipping transforms (det < 0) the U direction of the CP
+    grid is reversed and the U knot vector is correspondingly reversed.
+    """
+    transforms = _mirror_transforms(obj)
+    for tf, suffix in transforms:
+        out_pts = _transform_pts3(pts_uv3, tf)
+        out_wts = wts_uv.copy()
+        out_ku = list(ku)
+        out_kv = list(kv)
+        if _orientation_flipped(tf):
+            out_pts = out_pts[::-1, :, :].copy()
+            out_wts = out_wts[::-1, :].copy()
+            out_ku = _reverse_knots(out_ku)
+        srf = _build_nurbs_surface(out_pts, out_wts, order_u, order_v,
+                                   out_ku, out_kv, is_rational)
+        attr = rhino3dm.ObjectAttributes()
+        attr.Name = obj.name + suffix
+        model.Objects.AddSurface(srf, attr)
+        print(f'  Added {log_label}: {attr.Name!r}')
+
+
+def _emit_mirrored_curve(model, obj, pts_n3, order, knots, log_label,
+                         reverse_knots_on_flip=True):
+    """Emit a NurbsCurve for the original CPs and one for each mirrored copy
+    produced by *obj*'s Mirror modifier stack.
+
+    For orientation-flipping transforms the point order is reversed.  For
+    closed degree-1 polylines (FlatPatch) the knot vector is independent of
+    orientation, so ``reverse_knots_on_flip`` may be left True without effect.
+    """
+    transforms = _mirror_transforms(obj)
+    for tf, suffix in transforms:
+        out_pts = _transform_pts3(pts_n3, tf)
+        out_knots = list(knots)
+        if _orientation_flipped(tf):
+            out_pts = out_pts[::-1].copy()
+            if reverse_knots_on_flip:
+                out_knots = _reverse_knots(out_knots)
+        nc = rhino3dm.NurbsCurve(3, False, order, len(out_pts))
+        for i, p in enumerate(out_pts):
+            nc.Points[i] = rhino3dm.Point4d(
+                float(p[0]), float(p[1]), float(p[2]), 1.0)
+        for i, k in enumerate(out_knots):
+            nc.Knots[i] = k
+        attr = rhino3dm.ObjectAttributes()
+        attr.Name = obj.name + suffix
+        model.Objects.AddCurve(nc, attr)
+        print(f'  Added {log_label}: {attr.Name!r}')
+
+
 def export_sp_bspline_surface(model, obj, depsgraph):
-    """Export a Surface Psycho NURBS patch (B-spline surface) to rhino3dm."""
+    """Export a Surface Psycho NURBS patch (B-spline surface) to rhino3dm.
+
+    Emits one NurbsSurface for the original plus additional copies for each
+    Mirror modifier on the object.
+    """
     ob = obj.evaluated_get(depsgraph)
     try:
         u_count, v_count = _sp_read_attr(ob, 'CP_count', 2).astype(int)
@@ -408,30 +591,22 @@ def export_sp_bspline_surface(model, obj, depsgraph):
 
     if len(ku) != exp_ku or len(kv) != exp_kv:
         print(f'  Knot length mismatch U:{len(ku)}≠{exp_ku}  V:{len(kv)}≠{exp_kv} — skipped')
+        print(f'    uknots={list(uknots)}  umult={list(umult)}  ku={ku}')
+        print(f'    vknots={list(vknots)}  vmult={list(vmult)}  kv={kv}')
         return
 
-    srf = rhino3dm.NurbsSurface.Create(3, is_rational, order_u, order_v, u_count, v_count)
-
-    for vi in range(v_count):
-        for ui in range(u_count):
-            p = pts[ui, vi]
-            w = float(wts[ui, vi])
-            srf.Points[ui, vi] = rhino3dm.Point4d(
-                float(p[0]) * w, float(p[1]) * w, float(p[2]) * w, w)
-
-    for i, k in enumerate(ku):
-        srf.KnotsU[i] = k
-    for i, k in enumerate(kv):
-        srf.KnotsV[i] = k
-
-    attr = rhino3dm.ObjectAttributes()
-    attr.Name = obj.name
-    model.Objects.AddSurface(srf, attr)
-    print(f'  Added SP B-spline surface: {obj.name!r}')
+    _emit_mirrored_surface(model, obj, pts, wts,
+                           order_u=order_u, order_v=order_v,
+                           ku=ku, kv=kv, is_rational=is_rational,
+                           log_label='SP B-spline surface')
 
 
 def export_sp_bezier_surface(model, obj, depsgraph):
-    """Export a Surface Psycho Bezier patch to rhino3dm as a NURBS surface."""
+    """Export a Surface Psycho Bezier patch to rhino3dm as a NURBS surface.
+
+    Emits one NurbsSurface for the original plus additional copies for each
+    Mirror modifier on the object.
+    """
     ob = obj.evaluated_get(depsgraph)
     try:
         u_count, v_count = _sp_read_attr(ob, 'CP_count', 2).astype(int)
@@ -452,28 +627,19 @@ def export_sp_bezier_surface(model, obj, depsgraph):
 
     print(f'  SP Bezier surface: {u_count}x{v_count} CVs  degree {degree_u}x{degree_v}')
 
-    srf = rhino3dm.NurbsSurface.Create(3, False, order_u, order_v, u_count, v_count)
-
-    # SP stores (vi outer, ui inner): index = vi * u_count + ui
-    for vi in range(v_count):
-        for ui in range(u_count):
-            p = points[vi * u_count + ui]
-            srf.Points[ui, vi] = rhino3dm.Point4d(float(p[0]), float(p[1]), float(p[2]), 1.0)
+    # SP stores CPs V-major (vi outer, ui inner).  Reshape to (u, v, 3).
+    pts_uv3 = points.reshape(v_count, u_count, 3).transpose(1, 0, 2).copy()
+    wts_uv = np.ones((u_count, v_count), float)
 
     # rhino3dm Bezier knot vector: degree zeros followed by degree ones
     # (full clamped knot [0]*order + [1]*order minus the outermost entries)
     ku = [0.0] * degree_u + [1.0] * degree_u
     kv = [0.0] * degree_v + [1.0] * degree_v
 
-    for i, k in enumerate(ku):
-        srf.KnotsU[i] = k
-    for i, k in enumerate(kv):
-        srf.KnotsV[i] = k
-
-    attr = rhino3dm.ObjectAttributes()
-    attr.Name = obj.name
-    model.Objects.AddSurface(srf, attr)
-    print(f'  Added SP Bezier surface (as NURBS): {obj.name!r}')
+    _emit_mirrored_surface(model, obj, pts_uv3, wts_uv,
+                           order_u=order_u, order_v=order_v,
+                           ku=ku, kv=kv, is_rational=False,
+                           log_label='SP Bezier surface (as NURBS)')
 
 
 def _edge_mesh_to_chains(me, mat):
@@ -525,6 +691,7 @@ def _edge_mesh_to_chains(me, mat):
         is_closed = all(len(adj[v]) == 2 for v in component)
 
         chain = [start]
+        in_chain = {start}
         prev = -1
         while True:
             curr = chain[-1]
@@ -534,7 +701,10 @@ def _edge_mesh_to_chains(me, mat):
             nxt = nexts[0]
             if nxt == start and len(chain) > 1:
                 break
+            if nxt in in_chain:  # cycle not passing through start — stop to prevent infinite loop
+                break
             chain.append(nxt)
+            in_chain.add(nxt)
             prev = curr
 
         pts = [mat @ Vector(verts_local[vi]) for vi in chain]
@@ -553,7 +723,7 @@ def _chains_to_nurbs_curves(model, chains, name):
             continue
 
         is_closed = pts[0] == pts[-1] if n > 1 else False
-        knot_count = n - 1  # rhino3dm degree-1: pointCount + order - 2 = n + 2 - 2 = n
+        knot_count = n  # rhino3dm degree-1: pointCount + order - 2 = n + 2 - 2 = n
         nc = rhino3dm.NurbsCurve(3, False, 2, n)
         for i, pt in enumerate(pts):
             nc.Points[i] = rhino3dm.Point4d(pt.x, pt.y, pt.z, 1.0)
@@ -615,6 +785,9 @@ def export_sp_bezier_curve_any_order(model, obj, depsgraph):
     with knot vector [0]*degree + [1]*degree (rhino form, outermost entries
     omitted).  Control points are in world space (same as SP surface types);
     matrix_world is NOT applied.
+
+    Emits one NurbsCurve for the original plus additional copies for each
+    Mirror modifier on the object.
     """
     ob = obj.evaluated_get(depsgraph)
     me = ob.data
@@ -633,23 +806,13 @@ def export_sp_bezier_curve_any_order(model, obj, depsgraph):
 
     cp_data = np.empty(len(me.vertices) * 3, float)
     me.attributes['CP_any_order_curve'].data.foreach_get('vector', cp_data)
-    cps = cp_data.reshape(-1, 3)[:cp_count]
+    cps = cp_data.reshape(-1, 3)[:cp_count].copy()
 
     degree = cp_count - 1
-    nc = rhino3dm.NurbsCurve(3, False, degree + 1, cp_count)
+    knots = [0.0] * degree + [1.0] * degree
 
-    for i, pt in enumerate(cps):
-        nc.Points[i] = rhino3dm.Point4d(float(pt[0]), float(pt[1]), float(pt[2]), 1.0)
-
-    for i in range(degree):
-        nc.Knots[i] = 0.0
-    for i in range(degree):
-        nc.Knots[degree + i] = 1.0
-
-    attr = rhino3dm.ObjectAttributes()
-    attr.Name = obj.name
-    model.Objects.AddCurve(nc, attr)
-    print(f'  Added SP BezierCurveAnyOrder (degree {degree}): {obj.name!r}')
+    _emit_mirrored_curve(model, obj, cps, order=degree + 1, knots=knots,
+                         log_label=f'SP BezierCurveAnyOrder (degree {degree})')
 
 
 def export_sp_flatpatch(model, obj, depsgraph):
@@ -662,9 +825,13 @@ def export_sp_flatpatch(model, obj, depsgraph):
     mesher builds correctly.  Mesh vertices are in local (object) space so
     matrix_world is applied to convert to world space.
 
-    Each polygon in the mesh is exported as a separate closed NurbsCurve.
     SP FlatPatch meshes typically have two polygons (front and back faces);
-    only polygon 0 (index 0) is exported to avoid duplicates.
+    polygon[0] is taken as the canonical boundary.  Mirror modifiers append
+    extra polygons but those are handled explicitly via _emit_mirrored_curve
+    so the boundary read from polygon[0] is sufficient.
+
+    Emits one NurbsCurve for the original plus additional copies for each
+    Mirror modifier on the object.
     """
     ob = obj.evaluated_get(depsgraph)
     me = ob.data
@@ -678,23 +845,21 @@ def export_sp_flatpatch(model, obj, depsgraph):
     me.vertices.foreach_get('co', verts_local)
     verts_local = verts_local.reshape(-1, 3)
 
-    # Export only the first polygon to avoid duplicating the mirrored back face
     poly = me.polygons[0]
-    boundary = [mat @ Vector(verts_local[vi]) for vi in poly.vertices]
-    n = len(boundary)
+    n = len(poly.vertices)
+    # Build closed polyline in world space (last point == first).
+    pts_closed = np.empty((n + 1, 3), float)
+    for i, vi in enumerate(poly.vertices):
+        v = mat @ Vector((float(verts_local[vi, 0]),
+                          float(verts_local[vi, 1]),
+                          float(verts_local[vi, 2])))
+        pts_closed[i] = (v.x, v.y, v.z)
+    pts_closed[n] = pts_closed[0]
 
-    # Closed degree-1 NURBS polyline: n+1 points (last = first), n+1 knots
-    nc = rhino3dm.NurbsCurve(3, False, 2, n + 1)
-    for i, pt in enumerate(boundary):
-        nc.Points[i] = rhino3dm.Point4d(pt.x, pt.y, pt.z, 1.0)
-    nc.Points[n] = rhino3dm.Point4d(boundary[0].x, boundary[0].y, boundary[0].z, 1.0)
-    for i in range(n + 1):
-        nc.Knots[i] = float(i)
+    knots = [float(i) for i in range(n + 1)]
 
-    attr = rhino3dm.ObjectAttributes()
-    attr.Name = obj.name
-    model.Objects.AddCurve(nc, attr)
-    print(f'  Added SP FlatPatch boundary: {obj.name!r}  ({n} vertices)')
+    _emit_mirrored_curve(model, obj, pts_closed, order=2, knots=knots,
+                         log_label=f'SP FlatPatch boundary ({n} verts)')
 
 
 def save(context, filepath, use_selection, mesh_fallback, export_flatpatch=True):

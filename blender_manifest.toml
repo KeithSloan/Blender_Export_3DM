@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "export_nurbs_3dm"
-version = "0.7.1"
+version = "0.8.0"
 name = "Export NURBS 3DM"
 tagline = "Export NURBS surfaces to Rhino 3DM format using rhino3dm"
 maintainer = "Keith Sloan"

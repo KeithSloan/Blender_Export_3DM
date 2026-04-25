@@ -294,6 +294,48 @@ For **FlatPatch, Curve and Compound**, the evaluated mesh vertices are in
 `BEZIER_CURVE_ANY_ORDER` uses the `CP_any_order_curve` GN attribute which is
 in world space, so `matrix_world` is **not** applied (same as surface types).
 
+### Mirror modifier support (v0.8.0+)
+
+SP's geometry-node mesher writes a single patch's worth of control points to
+mesh attributes.  When a Mirror modifier is in the stack it duplicates verts
+and faces but **does not duplicate the SP attribute payload**.  Without
+explicit handling, the mirrored half of every Mirror-modifier-bearing object
+is silently lost — ship hulls in particular often have ~half their surfaces
+mirrored, so the export ends up looking like a half-boat.
+
+The exporter handles this for the SP types that read CP attributes
+(`BSPLINE_SURFACE`, `BEZIER_SURFACE`, `BEZIER_CURVE_ANY_ORDER`) and for
+`FLATPATCH` (which reads only `polygon[0]`).  For each Mirror modifier on the
+object, the exporter computes a 4x4 world-space mirror matrix and emits an
+additional NurbsSurface / NurbsCurve for each mirrored copy.  Naming uses a
+`_mirrorX` / `_mirrorY` / `_mirrorXY` etc. suffix on the exported object name.
+
+A Mirror modifier with N enabled axes contributes 2**N copies (original plus
+2**N − 1 variants).  Stacked Mirror modifiers compose as a Cartesian product.
+
+Mirror reference frame:
+- If `mirror_object` is set: mirror in the mirror_object's local frame.
+- Otherwise: mirror in the object's own local frame.
+
+The world-space mirror matrix is `ref @ flip @ ref.inverted()`, where `ref`
+is the modifier's reference matrix and `flip` is a diagonal matrix with -1
+on the enabled axes.
+
+When the mirror flips orientation (det < 0):
+- For surfaces: U direction is reversed (CP grid flipped along axis 0) and
+  the U knot vector is reversed via `_reverse_knots`.
+- For curves: point order is reversed and the knot vector is reversed.
+
+This preserves consistent surface normals / curve winding so that closed
+planar curves (e.g. FlatPatch boundaries) are filled correctly when imported
+into FreeCAD.
+
+Disabled Mirror modifiers (eyeball off in the modifier stack) are skipped.
+
+**SP CURVE and SP COMPOUND do not need explicit Mirror handling**: their
+exported geometry comes from the *evaluated* edge mesh, which already
+contains the mirrored vertices and edges produced by the modifier.
+
 ### SP file locations
 
 ```
