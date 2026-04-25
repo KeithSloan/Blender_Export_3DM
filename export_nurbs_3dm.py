@@ -276,6 +276,7 @@ _SP_MESHER_NAMES = {
     'SURFACE_OF_EXTRUSION':   'SP - Surface of Extrusion Meshing',
     'CURVE':                  'SP - Curve Meshing',
     'COMPOUND':               'SP - Compound Meshing',
+    'BEZIER_CURVE_ANY_ORDER': 'SP -  Bezier Curve Any Order',
 }
 
 
@@ -475,6 +476,182 @@ def export_sp_bezier_surface(model, obj, depsgraph):
     print(f'  Added SP Bezier surface (as NURBS): {obj.name!r}')
 
 
+def _edge_mesh_to_chains(me, mat):
+    """Return a list of ordered world-space point lists from an edge-only mesh.
+
+    Traces connected components of the edge graph.  Each component is returned
+    as an ordered list of mathutils.Vector (world space).  Open chains start
+    from a degree-1 vertex; closed loops start from vertex 0 of that component.
+    """
+    n_verts = len(me.vertices)
+    n_edges = len(me.edges)
+    if n_verts == 0 or n_edges == 0:
+        return []
+
+    verts_local = np.empty(n_verts * 3, float)
+    me.vertices.foreach_get('co', verts_local)
+    verts_local = verts_local.reshape(-1, 3)
+
+    edge_arr = np.empty(n_edges * 2, int)
+    me.edges.foreach_get('vertices', edge_arr)
+    edge_arr = edge_arr.reshape(-1, 2)
+
+    adj = {i: [] for i in range(n_verts)}
+    for a, b in edge_arr:
+        adj[a].append(b)
+        adj[b].append(a)
+
+    visited = set()
+    chains = []
+
+    for seed in range(n_verts):
+        if seed in visited:
+            continue
+
+        # Collect all vertices in this connected component
+        component = set()
+        stack = [seed]
+        while stack:
+            v = stack.pop()
+            if v in component:
+                continue
+            component.add(v)
+            stack.extend(adj[v])
+
+        visited |= component
+
+        # Find an endpoint (degree 1) to start; if none, it's a closed loop
+        start = next((v for v in component if len(adj[v]) == 1), next(iter(component)))
+        is_closed = all(len(adj[v]) == 2 for v in component)
+
+        chain = [start]
+        prev = -1
+        while True:
+            curr = chain[-1]
+            nexts = [v for v in adj[curr] if v != prev]
+            if not nexts:
+                break
+            nxt = nexts[0]
+            if nxt == start and len(chain) > 1:
+                break
+            chain.append(nxt)
+            prev = curr
+
+        pts = [mat @ Vector(verts_local[vi]) for vi in chain]
+        if is_closed:
+            pts.append(pts[0])
+        chains.append(pts)
+
+    return chains
+
+
+def _chains_to_nurbs_curves(model, chains, name):
+    """Add each chain as a degree-1 closed or open NurbsCurve to *model*."""
+    for idx, pts in enumerate(chains):
+        n = len(pts)
+        if n < 2:
+            continue
+
+        is_closed = pts[0] == pts[-1] if n > 1 else False
+        knot_count = n - 1  # rhino3dm degree-1: pointCount + order - 2 = n + 2 - 2 = n
+        nc = rhino3dm.NurbsCurve(3, False, 2, n)
+        for i, pt in enumerate(pts):
+            nc.Points[i] = rhino3dm.Point4d(pt.x, pt.y, pt.z, 1.0)
+        for i in range(knot_count):
+            nc.Knots[i] = float(i)
+
+        attr = rhino3dm.ObjectAttributes()
+        attr.Name = name if len(chains) == 1 else f'{name}.{idx:03d}'
+        model.Objects.AddCurve(nc, attr)
+
+    return len(chains)
+
+
+def export_sp_curve(model, obj, depsgraph):
+    """Export a Surface Psycho Curve (SP - Curve Meshing) as NurbsCurve polyline(s).
+
+    SP Curve objects store their geometry as an evaluated edge mesh (no face
+    polygons).  The mesh vertices are in local object space; matrix_world is
+    applied to convert to world space.  Each connected chain of edges becomes
+    a separate degree-1 NurbsCurve.
+
+    Note: the true NURBS control data (CP_curve, Degree, Knot attributes) is
+    not present in the evaluated mesh for these objects — the exported curve is
+    a polyline through the evaluated mesh vertices, not the original NURBS.
+    """
+    ob = obj.evaluated_get(depsgraph)
+    chains = _edge_mesh_to_chains(ob.data, obj.matrix_world)
+    if not chains:
+        print(f'  SP Curve {obj.name!r}: no edge geometry — skipped')
+        return
+    n = _chains_to_nurbs_curves(model, chains, obj.name)
+    total_pts = sum(len(c) for c in chains)
+    print(f'  Added SP Curve: {obj.name!r}  ({n} chain(s), {total_pts} pts total)')
+
+
+def export_sp_compound(model, obj, depsgraph):
+    """Export a Surface Psycho Compound (SP - Compound Meshing) as NurbsCurve polyline(s).
+
+    SP Compound objects are collections of curve segments stored as an edge
+    mesh, similar to Curve objects but potentially containing multiple
+    disconnected chains.  Each connected chain of edges becomes a separate
+    degree-1 NurbsCurve.
+    """
+    ob = obj.evaluated_get(depsgraph)
+    chains = _edge_mesh_to_chains(ob.data, obj.matrix_world)
+    if not chains:
+        print(f'  SP Compound {obj.name!r}: no edge geometry — skipped')
+        return
+    n = _chains_to_nurbs_curves(model, chains, obj.name)
+    total_pts = sum(len(c) for c in chains)
+    print(f'  Added SP Compound: {obj.name!r}  ({n} chain(s), {total_pts} pts total)')
+
+
+def export_sp_bezier_curve_any_order(model, obj, depsgraph):
+    """Export a Surface Psycho Bezier Curve Any Order as a NurbsCurve.
+
+    Reads CP_count (index 0) and CP_any_order_curve from the evaluated mesh.
+    Represents the curve as a single clamped Bezier of degree = cp_count - 1
+    with knot vector [0]*degree + [1]*degree (rhino form, outermost entries
+    omitted).  Control points are in world space (same as SP surface types);
+    matrix_world is NOT applied.
+    """
+    ob = obj.evaluated_get(depsgraph)
+    me = ob.data
+
+    if 'CP_any_order_curve' not in me.attributes or 'CP_count' not in me.attributes:
+        print(f'  SP BezierCurveAnyOrder {obj.name!r}: missing attributes — skipped')
+        return
+
+    cp_count_data = np.empty(len(me.vertices), dtype=float)
+    me.attributes['CP_count'].data.foreach_get('value', cp_count_data)
+    cp_count = int(cp_count_data[0])
+
+    if cp_count < 2:
+        print(f'  SP BezierCurveAnyOrder {obj.name!r}: cp_count={cp_count} < 2 — skipped')
+        return
+
+    cp_data = np.empty(len(me.vertices) * 3, float)
+    me.attributes['CP_any_order_curve'].data.foreach_get('vector', cp_data)
+    cps = cp_data.reshape(-1, 3)[:cp_count]
+
+    degree = cp_count - 1
+    nc = rhino3dm.NurbsCurve(3, False, degree + 1, cp_count)
+
+    for i, pt in enumerate(cps):
+        nc.Points[i] = rhino3dm.Point4d(float(pt[0]), float(pt[1]), float(pt[2]), 1.0)
+
+    for i in range(degree):
+        nc.Knots[i] = 0.0
+    for i in range(degree):
+        nc.Knots[degree + i] = 1.0
+
+    attr = rhino3dm.ObjectAttributes()
+    attr.Name = obj.name
+    model.Objects.AddCurve(nc, attr)
+    print(f'  Added SP BezierCurveAnyOrder (degree {degree}): {obj.name!r}')
+
+
 def export_sp_flatpatch(model, obj, depsgraph):
     """Export a Surface Psycho FlatPatch boundary as a closed NurbsCurve polyline.
 
@@ -551,6 +728,12 @@ def save(context, filepath, use_selection, mesh_fallback):
                 export_sp_bezier_surface(model, obj, depsgraph)
             elif sp_type == 'PLANE':
                 export_sp_flatpatch(model, obj, depsgraph)
+            elif sp_type == 'CURVE':
+                export_sp_curve(model, obj, depsgraph)
+            elif sp_type == 'COMPOUND':
+                export_sp_compound(model, obj, depsgraph)
+            elif sp_type == 'BEZIER_CURVE_ANY_ORDER':
+                export_sp_bezier_curve_any_order(model, obj, depsgraph)
             elif sp_type is not None:
                 print(f'  SP type {sp_type!r} not yet supported for 3DM export — skipped')
             elif mesh_fallback:

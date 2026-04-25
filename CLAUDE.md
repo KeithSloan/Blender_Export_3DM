@@ -89,21 +89,22 @@ node group matches a known mesher name.  Node groups may be numbered
 (`SP - NURBS Patch Meshing.001`) — the exporter strips the last 4 characters
 before comparing, mirroring SP's own `sp_type_of_object` logic.
 
-Mesher → type mapping (only BSPLINE_SURFACE and BEZIER_SURFACE are currently
-exported; others are skipped with a message):
+Mesher → type mapping:
 
-| SP type | Modifier node group |
-|---|---|
-| `BSPLINE_SURFACE` | `SP - NURBS Patch Meshing` |
-| `BEZIER_SURFACE` | `SP - Bezier Patch Meshing` |
-| `PLANE` | `SP - FlatPatch Meshing` |
-| `CYLINDER` | `SP - Cylindrical Meshing` |
-| `CONE` | `SP - Conical Meshing` |
-| `SPHERE` | `SP - Spherical Meshing` |
-| `TORUS` | `SP - Toroidal Meshing` |
-| `SURFACE_OF_REVOLUTION` | `SP - Surface of Revolution Meshing` |
-| `SURFACE_OF_EXTRUSION` | `SP - Surface of Extrusion Meshing` |
-| `CURVE` | `SP - Curve Meshing` |
+| SP type | Modifier node group | Exported as |
+|---|---|---|
+| `BSPLINE_SURFACE` | `SP - NURBS Patch Meshing` | `NurbsSurface` |
+| `BEZIER_SURFACE` | `SP - Bezier Patch Meshing` | `NurbsSurface` |
+| `PLANE` | `SP - FlatPatch Meshing` | `NurbsCurve` boundary polyline |
+| `CURVE` | `SP - Curve Meshing` | `NurbsCurve` polyline(s) |
+| `COMPOUND` | `SP - Compound Meshing` | `NurbsCurve` polyline(s), one per chain |
+| `BEZIER_CURVE_ANY_ORDER` | `SP -  Bezier Curve Any Order` | `NurbsCurve` single Bezier segment |
+| `CYLINDER` | `SP - Cylindrical Meshing` | skipped |
+| `CONE` | `SP - Conical Meshing` | skipped |
+| `SPHERE` | `SP - Spherical Meshing` | skipped |
+| `TORUS` | `SP - Toroidal Meshing` | skipped |
+| `SURFACE_OF_REVOLUTION` | `SP - Surface of Revolution Meshing` | skipped |
+| `SURFACE_OF_EXTRUSION` | `SP - Surface of Extrusion Meshing` | skipped |
 
 ### NURBS patch attributes (`BSPLINE_SURFACE`)
 
@@ -150,13 +151,65 @@ warning — this usually indicates a degenerate or unsupported SP configuration.
 Represented in rhino3dm as a clamped NURBS with `order = count` (degree =
 count − 1) and knot vector `[0]*degree + [1]*degree`.
 
+### FlatPatch attributes (`PLANE`)
+
+FlatPatch stores its boundary as degree-1 segments in `CP_planar` (world
+space), but only the explicit segments — the implicit connecting segments
+are not stored.  The exporter uses the **evaluated mesh polygon** instead:
+
+- `polygon[0].vertices` — ordered boundary vertex indices
+- `me.vertices[i].co` — local-space positions (need `matrix_world` applied)
+
+Each FlatPatch evaluated mesh has typically 2 polygons (front and back faces
+from the GN mesher); only `polygon[0]` is exported to avoid duplication.
+The result is a closed degree-1 `NurbsCurve` polyline.
+
+### Curve attributes (`CURVE`)
+
+SP Curve objects do **not** have `CP_curve`, `Degree`, `Knot` etc. in their
+evaluated mesh — the GN mesher outputs a pure edge mesh (vertices + edges,
+no polygons).  The exporter traces connected edge chains and exports each as
+a degree-1 `NurbsCurve` polyline.  Vertices are in local space; `matrix_world`
+is applied.
+
+This means the exported curve is a polyline through the evaluated mesh
+vertices, not the true NURBS representation.  SP's own STEP/IGES exporter
+reads source attributes directly via OCP and does not have this limitation.
+
+### Compound attributes (`COMPOUND`)
+
+Same structure as `CURVE` — a pure edge mesh.  May contain multiple
+disconnected chains.  Additionally has an `Endpoints` boolean attribute
+marking junction vertices, but this is not currently used (each connected
+component is exported as a separate chain regardless).
+
+### Bezier Curve Any Order attributes (`BEZIER_CURVE_ANY_ORDER`)
+
+| Attribute | Type | Description |
+|---|---|---|
+| `CP_count` | INT[n_verts] | Control point count stored at index 0; remaining values are 0 |
+| `CP_any_order_curve` | FLOAT_VECTOR[n_verts] | Control points in world space; first `CP_count[0]` entries are valid |
+
+Exported as a single clamped Bezier `NurbsCurve` of degree = `cp_count − 1`.
+Knot vector (rhino form): `[0.0] * degree + [1.0] * degree`.
+
+Control points are in **world space** (GN outputs them pre-transformed);
+`matrix_world` is **not** applied — same convention as `BEZIER_SURFACE`.
+
+Test file: `Surface_Psycho_Files/SP - any order curve iterative vs unlooped.blend`
+
 ### World transform
 
-SP geometry-node trees output control points in **world space** (they
-internally apply the object's world matrix).  Therefore `matrix_world` is
-**not** applied during SP export — matching SP's own STEP/IGES exporter.  SP
-objects with unapplied transforms should have their transforms applied first
-(`Ctrl+A → All Transforms` in Blender).
+SP geometry-node trees output control points in **world space** for
+BSPLINE_SURFACE and BEZIER_SURFACE (they internally apply `matrix_world`).
+Therefore `matrix_world` is **not** applied for those types — matching SP's
+own STEP/IGES exporter.
+
+For **FlatPatch, Curve and Compound**, the evaluated mesh vertices are in
+**local (object) space**, so `matrix_world` IS applied during export.
+
+`BEZIER_CURVE_ANY_ORDER` uses the `CP_any_order_curve` GN attribute which is
+in world space, so `matrix_world` is **not** applied (same as surface types).
 
 ### SP file locations
 

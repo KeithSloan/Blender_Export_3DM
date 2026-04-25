@@ -29,8 +29,23 @@ data directly from those attributes — no intermediate mesh conversion.
 |---|---|---|
 | NURBS Patch (`SP - NURBS Patch Meshing`) | `CP_NURBS_surf`, `Degrees`, `Knot U/V`, `Multiplicity U/V` | `NurbsSurface` |
 | Bezier Patch (`SP - Bezier Patch Meshing`) | `CP_any_order_surf`, `CP_count` | `NurbsSurface` (degree = count − 1) |
+| FlatPatch (`SP - FlatPatch Meshing`) | evaluated mesh polygon 0 | `NurbsCurve` closed polyline (boundary) |
+| Curve (`SP - Curve Meshing`) | evaluated edge mesh | `NurbsCurve` polyline(s) |
+| Compound (`SP - Compound Meshing`) | evaluated edge mesh | `NurbsCurve` polyline(s), one per chain |
+| Bezier Curve Any Order (`SP -  Bezier Curve Any Order`) | `CP_any_order_curve`, `CP_count` | `NurbsCurve` single Bezier (degree = count − 1) |
 
-SP object types that are not yet supported (FlatPatch, Curve, Cylinder, Sphere,
+> **FlatPatch note:** Exported as a closed boundary polyline, not a trimmed
+> surface.  The boundary curve can be used in FreeCAD or Rhino to reconstruct
+> the surface (e.g. with a Fill Surface or planar face command).
+
+> **Curve / Compound note:** The true NURBS control data (`CP_curve`,
+> `Degree`, `Knot` attributes) is not present in the evaluated mesh for these
+> object types — the exported curve is a polyline through the evaluated mesh
+> vertices, not the original NURBS parameterisation.  This is a limitation of
+> what SP's GN mesher outputs to the evaluated mesh; the STEP/IGES exporter
+> reads the source attributes directly via OCP and does not have this limitation.
+
+SP object types that are not yet supported (Cylinder, Sphere,
 Cone, Torus, Surface of Revolution/Extrusion) are skipped with an informational
 message.
 
@@ -124,10 +139,10 @@ workflow applies.  Bear in mind that not all SP object types are exportable yet
 type is not supported are skipped with an informational message in the console;
 the export still completes for all supported objects.
 
-The Pinnace file consists mainly of `SP - FlatPatch Meshing` (FlatPatch — not
-yet supported) and `SP - Bezier Patch Meshing` (Bezier patch — exported as
-`NurbsSurface`).  Exporting the whole file will produce a `.3dm` containing the
-Bezier patches; the FlatPatch objects will be skipped.
+The Pinnace file consists mainly of `SP - FlatPatch Meshing` (FlatPatch —
+exported as a closed boundary polyline) and `SP - Bezier Patch Meshing` (Bezier
+patch — exported as `NurbsSurface`).  COMPOUND objects with no evaluated edge
+geometry are skipped with an informational message.
 
 ## Pipeline
 
