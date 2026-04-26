@@ -48,6 +48,21 @@ data directly from those attributes — no intermediate mesh conversion.
 > what SP's GN mesher outputs to the evaluated mesh; the STEP/IGES exporter
 > reads the source attributes directly via OCP and does not have this limitation.
 
+> **Mirror modifier (v0.8.0+):** SP's geometry-node mesher writes a single
+> patch's worth of control points; a Mirror modifier in the stack duplicates
+> mesh elements but not the SP attribute payload.  Without explicit handling,
+> mirrored halves are silently lost — ship hulls in particular often look
+> half-exported.  v0.8.0 detects Mirror modifiers on `BSPLINE_SURFACE`,
+> `BEZIER_SURFACE`, `BEZIER_CURVE_ANY_ORDER`, and `FLATPATCH` objects and
+> emits one extra `NurbsSurface` / `NurbsCurve` per mirrored copy, suffixing
+> the exported name with `_mirrorX` / `_mirrorY` / `_mirrorZ` (or
+> combinations).  Mirror reference frame, axis combinations, stacked Mirror
+> modifiers, and the `mirror_object` field are all honoured.  See the
+> *Mirror modifier support* section in `CLAUDE.md` for the technical detail.
+> SP `CURVE` and `COMPOUND` do not need explicit Mirror handling — their
+> exported geometry comes from the evaluated edge mesh which already contains
+> the mirrored vertices and edges.
+
 SP object types that are not yet supported (Cylinder, Sphere,
 Cone, Torus, Surface of Revolution/Extrusion) are skipped with an informational
 message.
@@ -279,6 +294,21 @@ so parameterisation shifts are expected on closed/rational surfaces).
 Earlier import-and-re-export script (no comparison).  Superseded by
 `batch_3dm_compare.py` for most uses.
 
+### inspect_3dm.py
+
+Diagnostic script for inspecting a `.3dm` file produced by this exporter.
+Lists every object with its geometry type and dimensions, sorted by
+bounding-box diagonal.  Specifically flags **closed `NurbsCurves`** (which
+FreeCAD fills as faces) so they can be distinguished from real surfaces.
+
+```bash
+pip install rhino3dm
+python3 inspect_3dm.py "Surface_Psycho_Files/SP - 50ft Pinnace Nurbs model.3dm"
+```
+
+Use this when a FreeCAD import looks wrong to determine whether the issue is
+oversized geometry, closed-polyline-as-face fill, or missing surfaces.
+
 ### Headless single-file export
 
 To export one `.blend` to `.3dm` from the command line without opening the GUI:
@@ -303,9 +333,12 @@ SampleBlendFiles/
   V5.1.1/                 ← individual Blender 5.1.1 test files
 Surface_Psycho_Files/
   SP - 50ft Pinnace Nurbs model.blend/.3dm
+  SP - 50ft Pinnace Nurbs modelHHH.3dm/.FCStd  ← v0.8.0 export + FreeCAD save
   SP - Damen_Stan_Tender_1905_fix.blend/.3dm
   SP - any order curve iterative vs unlooped.blend/.3dm
   SP - Other Primitives_subset.3dm
+Exports_of_Bezier_Quest/
+  3dm_exports/                ← .3dm exports of Bezier-quest demo blends
 Sample_3DM_Files/
   *.3dm                   ← Rhino-originated test files
 ```
@@ -400,6 +433,34 @@ and round-trip correctly through both importers.
   geometry-node attributes, so no additional world-transform is applied.  SP
   objects with non-identity object transforms should be applied before export
   (same requirement as SP's own STEP/IGES exporter).
+
+## Known issue — two oversized NURBS surfaces in Pinnace export (v0.8.0)
+
+The file
+[`Surface_Psycho_Files/SP - 50ft Pinnace Nurbs modelHHH.3dm`](Surface_Psycho_Files/SP%20-%2050ft%20Pinnace%20Nurbs%20modelHHH.3dm)
+is a v0.8.0 export of `SP - 50ft Pinnace Nurbs model.blend` with Mirror
+modifier support enabled.  The hull, deck, cabin, rudder and other SP
+surfaces are now all exported correctly (both port and starboard halves
+present).  However, when opened in FreeCAD via the
+[ImportExport_3DM](https://github.com/KeithSloan/ImportExport_3DM) workbench,
+**two large flat-ish NURBS surfaces still dominate the view**, partly
+obscuring the boat.
+
+Investigation so far:
+
+- The two surfaces are `Plane.043` (~23 × 30 units, X-mirror enabled in the
+  source `.blend`) and `Plane.009` (~22.6 long, also X-mirrored).
+- They are real `BEZIER_SURFACE` SP objects in the source file — *not*
+  FlatPatch boundaries that FreeCAD is filling.  Re-running the inspection
+  script (`python3 inspect_3dm.py …`) on the export confirms zero closed
+  degree-1 NurbsCurves, and the two surfaces show up as the largest objects
+  by bounding-box diagonal.
+- Both objects are visible (not hidden) in the source `.blend`, so they are
+  faithfully exported.  The remaining question is what they represent in the
+  source model and whether they are intended to be there.
+
+This is left for further investigation.  The accompanying `.FCStd` is a
+FreeCAD project that captures the import state for reference.
 
 ## Known limitation — Blender NURBS surface Python API
 
